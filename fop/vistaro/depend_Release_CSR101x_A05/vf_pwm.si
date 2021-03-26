@@ -1,0 +1,2444 @@
+   1                 		.file	"vf_pwm.c"
+   2                 		.variant xap2+
+   3                 	
+   4                 		.small
+   5                 	
+   6                 		.section	.debug_abbrev,"",@progbits
+   7                 	.Ldebug_abbrev0:
+   8                 		.section	.debug_info,"",@progbits
+   9                 	.Ldebug_info0:
+  10                 		.section	.debug_line,"",@progbits
+  11                 	.Ldebug_line0:
+  12 0000 00 00 00 00 		.text
+  12      00 02 00 00 
+  12      00 00 01 01 
+  12      FB 0E 0D 00 
+  12      01 01 01 01 
+  13                 	.Ltext0:
+  14                 		.section	.text.write_buffer,"ax",@progbits
+  15                 		.type	write_buffer, @function
+  16                 	write_buffer:
+  17                 	.LFB3:
+  18                 		.file 1 "vf_pwm.c"
+   0:vf_pwm.c      **** /******************************************************************************
+   1:vf_pwm.c      ****  *  FILE
+   2:vf_pwm.c      ****  *      vf_pwm.c
+   3:vf_pwm.c      ****  *
+   4:vf_pwm.c      ****  *  DESCRIPTION
+   5:vf_pwm.c      ****  *      This file provides the implementation of the Very Fast PWM library.
+   6:vf_pwm.c      ****  *      The PWM output has a frequency of 15686 Hz, and the pulse widths 
+   7:vf_pwm.c      ****  *      can be adjusted in 0.25 microsecond steps. Up to 4 PWM outputs
+   8:vf_pwm.c      ****  *      are available. It's possible to have more PWM outputs (up to 8)
+   9:vf_pwm.c      ****  *      but not implemented in this release.
+  10:vf_pwm.c      ****  *
+  11:vf_pwm.c      ****  *      The PIO Controller code is generated on the fly according to the 
+  12:vf_pwm.c      ****  *      patterns specified by the user. For 4 PWM outputs, at most 0x2e
+  13:vf_pwm.c      ****  *      bytes will be generated. An example listing file named 
+  14:vf_pwm.c      ****  *      pio_ctrlr_code.lst can be found in the source folder.
+  15:vf_pwm.c      ****  *
+  16:vf_pwm.c      ****  *  NOTICE
+  17:vf_pwm.c      ****  *      Use of beta release software is at your own risk.  This software is
+  18:vf_pwm.c      ****  *      provided "as is," and CSR cautions users to determine for themselves
+  19:vf_pwm.c      ****  *      the suitability of using the beta version of this software.  CSR
+  20:vf_pwm.c      ****  *      makes no warranty or representation whatsoever of merchantability or
+  21:vf_pwm.c      ****  *      fitness of the product for any particular purpose or use.  In no
+  22:vf_pwm.c      ****  *      event shall CSR be liable for any consequential, incidental or
+  23:vf_pwm.c      ****  *      special damages whatsoever arising out of the use of or inability to
+  24:vf_pwm.c      ****  *      use this software, even if the user has advised CSR of the
+  25:vf_pwm.c      ****  *      possibility of such damages.  Provision of this software does not
+  26:vf_pwm.c      ****  *      imply that it has been given a Bluetooth Qualification listing.
+  27:vf_pwm.c      ****  *      There is no guarantee that CSR will seek a Bluetooth Qualification
+  28:vf_pwm.c      ****  *      listing for the software.
+  29:vf_pwm.c      ****  *
+  30:vf_pwm.c      ****  *****************************************************************************/
+  31:vf_pwm.c      **** 
+  32:vf_pwm.c      **** #define MAX_LENGTH_IN_BYTES 0x2e
+  33:vf_pwm.c      **** 
+  34:vf_pwm.c      **** #include <sleep.h>
+  35:vf_pwm.c      **** #include <pio_ctrlr.h>
+  36:vf_pwm.c      **** 
+  37:vf_pwm.c      **** #include "vf_pwm.h"
+  38:vf_pwm.c      **** 
+  39:vf_pwm.c      **** typedef struct 
+  40:vf_pwm.c      **** {
+  41:vf_pwm.c      **** 	uint16 *buffer;
+  42:vf_pwm.c      **** 	uint16 index;
+  43:vf_pwm.c      **** 	uint16 length; /* in bytes */
+  44:vf_pwm.c      **** } pio_ctrlr_code_buffer;
+  45:vf_pwm.c      **** 
+  46:vf_pwm.c      **** static uint16 pwm_pio_reg;
+  47:vf_pwm.c      **** static uint16 pwm_pio_drive_reg;
+  48:vf_pwm.c      **** static uint16 pwm0_pio_mask;
+  49:vf_pwm.c      **** static uint16 pwm1_pio_mask;
+  50:vf_pwm.c      **** static bool pwm_inverted;
+  51:vf_pwm.c      **** 
+  52:vf_pwm.c      **** static void init_buffer(pio_ctrlr_code_buffer*p, uint16 *buffer, uint16 length)
+  53:vf_pwm.c      **** {
+  54:vf_pwm.c      **** 	uint16 i;
+  55:vf_pwm.c      **** 	p->buffer = buffer;
+  56:vf_pwm.c      **** 	p->length = length;
+  57:vf_pwm.c      **** 	p->index = 2; /* the first word is for size (in byte) */
+  58:vf_pwm.c      **** 	length = (length>>1)+(length&1);
+  59:vf_pwm.c      **** 	for(i=0;i<length;i++) buffer[i]=0;
+  60:vf_pwm.c      **** }
+  61:vf_pwm.c      **** 
+  62:vf_pwm.c      **** static bool write_buffer(pio_ctrlr_code_buffer*p, uint16 *buffer, uint16 length)
+  63:vf_pwm.c      **** {
+  19                 	:
+  20                 		enter	#0x0001
+  21 0000 01 0B       	.LCFI0:
+  22                 		st	AL,@(-1,Y)
+  23 0001 FF 27       		st	AH,@(-2,Y)
+  24 0002 FE 23       		.loc 1 64 0
+  25                 		ld	AL,#0x0000
+  26 0003 00 14       	.LVL1:
+  27                 		bra	.L12
+  28 0004 00 00 00 00 	.LVL2:
+  28      00 E0 
+  29                 	.L9:
+  30                 		.loc 1 69 0
+  64:vf_pwm.c      **** 	uint16 data;
+  65:vf_pwm.c      **** 	uint16 i;
+  66:vf_pwm.c      **** 	for(i=0; i<length; i++)
+  67:vf_pwm.c      **** 	{
+  68:vf_pwm.c      **** 		if(p->index>=p->length) return 0;
+  31                 	)
+  32 0007 FF 1B       		ld	X,@(0x0001,X)
+  33 0008 01 1A       		st	X,@0xfff9
+  34 0009 F9 29       		ld	AL,@$XAP_UXL
+  35 000a 00 00 00 15 		ld	X,@(-1,Y)
+  36 000c FF 1B       		cmp	AL,@(0x0002,X)
+  37 000d 02 86       		bcs	.L3
+  38 000e 00 00 00 00 		ld	AL,#0x0000
+  38      00 FC 
+  39 0011 00 14       		bra	.L4
+  40 0012 00 00 00 00 	.L3:
+  40      00 E0 
+  41                 		.loc 1 70 0
+  69:vf_pwm.c      **** 		if(i&1) data = (buffer[i>>1]&0xff00)>>8;
+  42                 	ffa
+  43 0015 FA 15       		and	AL,#0x0001
+  44 0016 01 C4       		beq	.L5
+  45 0017 00 00 00 00 		ld	AH,@0xfffa
+  45      00 F4 
+  46 001a FA 11       		lsr	#0x0001
+  47 001b 00 09 01 A4 		ld	X,@$XAP_AH
+  48 001d 00 00 00 19 		add	X,@(-2,Y)
+  49 001f FE 3B       		ld	AH,@(0,X)
+  50 0020 00 12       		lsr	#0x0008
+  51 0021 00 09 08 A4 		st	AH,@0xfff8
+  52 0023 F8 21       		bra	.L6
+  53 0024 00 00 00 00 	.LVL3:
+  53      00 E0 
+  54                 	.L5:
+  55                 		.loc 1 71 0
+  70:vf_pwm.c      **** 		else data = buffer[i>>1]&0xff;
+  56                 	
+  57 0027 FA 11       		lsr	#0x0001
+  58 0028 00 09 01 A4 		ld	X,@$XAP_AH
+  59 002a 00 00 00 19 		add	X,@(-2,Y)
+  60 002c FE 3B       		ld	X,@(0,X)
+  61 002d 00 1A       		and	X,#0x00ff
+  62 002e 01 00 FF C8 		st	X,@0xfff8
+  63 0030 F8 29       	.L6:
+  64                 		.loc 1 72 0
+  71:vf_pwm.c      **** 		if(p->index&1) 
+  65                 	0xfff9
+  66 0031 F9 15       		and	AL,#0x0001
+  67 0032 01 C4       		ld	X,@(-1,Y)
+  68 0033 FF 1B       		ld	X,@(0,X)
+  69 0034 00 1A       		st	X,@0xfffb
+  70 0035 FB 29       		tst	@$XAP_AL
+  71 0036 00 00 00 99 		beq	.L7
+  72 0038 00 00 00 00 	.LBB2:
+  72      00 F4 
+  73                 		.loc 1 74 0
+  72:vf_pwm.c      ****         {
+  73:vf_pwm.c      ****             uint16 temp=p->buffer[p->index>>1];
+  74                 	xfff9
+  75 003b F9 11       		lsr	#0x0001
+  76 003c 00 09 01 A4 		ld	X,@$XAP_AH
+  77 003e 00 00 00 19 		add	X,@0xfffb
+  78 0040 FB 39       		.loc 1 76 0
+  74:vf_pwm.c      ****             temp=(temp&0x00ff);
+  75:vf_pwm.c      ****             p->buffer[p->index>>1]=temp|(data<<8);
+  79                 	L,@0xfff8
+  80 0041 F8 15       		asl	#0x0008
+  81 0042 08 A0       		ld	AH,@(0,X)
+  82 0043 00 12       		and	AH,#0x00ff
+  83 0044 01 00 FF C0 		or	AL,@$XAP_AH
+  84 0046 00 00 00 B5 		bra	.L11
+  85 0048 00 00 00 00 	.L7:
+  85      00 E0 
+  86                 	.LBE2:
+  87                 	.LBB3:
+  88                 		.loc 1 80 0
+  76:vf_pwm.c      ****         }
+  77:vf_pwm.c      **** 		else
+  78:vf_pwm.c      ****         {
+  79:vf_pwm.c      ****             uint16 temp=p->buffer[p->index>>1];
+  89                 	fff9
+  90 004b F9 11       		lsr	#0x0001
+  91 004c 00 09 01 A4 		ld	X,@$XAP_AH
+  92 004e 00 00 00 19 		add	X,@0xfffb
+  93 0050 FB 39       		.loc 1 82 0
+  80:vf_pwm.c      ****             temp=(temp&0xff00);
+  81:vf_pwm.c      ****             p->buffer[p->index>>1]=temp|data;
+  94                 	L,@(0,X)
+  95 0051 00 16       		and	AL,#0xff00
+  96 0052 FF 00 00 C4 		or	AL,@0xfff8
+  97 0054 F8 B5       	.L11:
+  98                 		st	AL,@(0,X)
+  99 0055 00 26       	.LBE3:
+ 100                 		.loc 1 84 0
+  82:vf_pwm.c      ****         }
+  83:vf_pwm.c      **** 		p->index++;
+ 101                 	(-1,Y)
+ 102 0056 FF 1B       		ld	AL,@(0x0001,X)
+ 103 0057 01 16       		add	AL,#0x0001
+ 104 0058 01 34       		st	AL,@(0x0001,X)
+ 105 0059 01 26       		.loc 1 67 0
+  67:vf_pwm.c      **** 	for(i=0; i<length; i++)
+ 106                 	L,@0xfffa
+ 107 005a FA 15       		add	AL,#0x0001
+ 108 005b 01 34       	.LVL4:
+ 109                 	.L12:
+ 110                 		st	AL,@0xfffa
+ 111 005c FA 25       		cmp	AL,@(0x0001,Y)
+ 112 005d 01 87       		bcs	.L9
+ 113 005e 00 00 00 00 	.LVL5:
+ 113      00 FC 
+ 114                 		ld	AL,#0x0001
+ 115 0061 01 14       	.L4:
+ 116                 		.loc 1 87 0
+  84:vf_pwm.c      **** 	}
+  85:vf_pwm.c      **** 	return 1;
+  86:vf_pwm.c      **** }
+ 117                 	001
+ 118 0062 01 0F       	.LFE3:
+ 119                 		.size	write_buffer, .-write_buffer
+ 120                 		.equ	__size_of_write_buffer,. - write_buffer
+ 121                 		.section	.text.VFPWMStop,"ax",@progbits
+ 122                 		.global	VFPWMStop
+ 123                 		.type	VFPWMStop, @function
+ 124                 	VFPWMStop:
+ 125                 	.LFB10:
+ 126                 		.loc 1 223 0
+  87:vf_pwm.c      **** 
+  88:vf_pwm.c      **** static bool write_header(pio_ctrlr_code_buffer*p)
+  89:vf_pwm.c      **** {
+  90:vf_pwm.c      **** 	uint16 header[4];
+  91:vf_pwm.c      **** 
+  92:vf_pwm.c      ****     header[0]=(pwm_pio_reg<<8)|0x79; /* mov r1, Px */
+  93:vf_pwm.c      **** 	header[1]=0x0178; /* mov r0, 1 */
+  94:vf_pwm.c      **** 	header[2]=0x75|(pwm_pio_drive_reg<<8); /* mov Px_DRIVE_EN, mask */
+  95:vf_pwm.c      ****     header[3]=pwm0_pio_mask|pwm1_pio_mask;
+  96:vf_pwm.c      **** 
+  97:vf_pwm.c      ****     return write_buffer(p, header, 7);
+  98:vf_pwm.c      **** }
+  99:vf_pwm.c      **** 
+ 100:vf_pwm.c      **** static bool write_output(pio_ctrlr_code_buffer*p, uint16 pattern, uint16 count)
+ 101:vf_pwm.c      **** {
+ 102:vf_pwm.c      **** 	uint16 temp[2];
+ 103:vf_pwm.c      **** 
+ 104:vf_pwm.c      ****     if(pwm_inverted) pattern = (~pattern)&0xff;
+ 105:vf_pwm.c      **** 
+ 106:vf_pwm.c      ****     temp[0]=(pattern<<8)|0x77; /* mov @r1, pattern */
+ 107:vf_pwm.c      **** 	temp[1]=(count<<8)|0x74; /* mov a, count */
+ 108:vf_pwm.c      **** 
+ 109:vf_pwm.c      ****     return write_buffer(p, temp, 4);
+ 110:vf_pwm.c      **** }
+ 111:vf_pwm.c      **** 
+ 112:vf_pwm.c      **** static bool write_loop(pio_ctrlr_code_buffer*p)
+ 113:vf_pwm.c      **** {
+ 114:vf_pwm.c      **** 	static uint16 loop[2]={
+ 115:vf_pwm.c      **** 		0x7098, /* subb a, r0 */
+ 116:vf_pwm.c      **** 		0x00fd  /* jnz 0xfd */
+ 117:vf_pwm.c      **** 	};
+ 118:vf_pwm.c      **** 
+ 119:vf_pwm.c      ****     return write_buffer(p, loop, 3);
+ 120:vf_pwm.c      **** }
+ 121:vf_pwm.c      **** 
+ 122:vf_pwm.c      **** static bool write_end(pio_ctrlr_code_buffer*p, uint16 pattern)
+ 123:vf_pwm.c      **** {
+ 124:vf_pwm.c      **** 	uint16 temp[2];
+ 125:vf_pwm.c      **** 
+ 126:vf_pwm.c      ****     if(pwm_inverted) pattern = (~pattern)&0xff;
+ 127:vf_pwm.c      **** 
+ 128:vf_pwm.c      ****     temp[0]=(pattern<<8)|0x77;  /* mov @r1, pattern */
+ 129:vf_pwm.c      **** 	temp[1]=0x0701; /* ajmp 0x07 */
+ 130:vf_pwm.c      **** 
+ 131:vf_pwm.c      ****     if(write_buffer(p, temp, 4))
+ 132:vf_pwm.c      **** 	{
+ 133:vf_pwm.c      **** 		p->buffer[0]=p->index-2; /* number of code bytes */
+ 134:vf_pwm.c      ****         if(p->buffer[0]&1) /* PioCtrlrInit requires an even number here */
+ 135:vf_pwm.c      ****             p->buffer[0]++;
+ 136:vf_pwm.c      **** 		return 1;
+ 137:vf_pwm.c      **** 	}
+ 138:vf_pwm.c      **** 	else
+ 139:vf_pwm.c      **** 		return 0;
+ 140:vf_pwm.c      **** }
+ 141:vf_pwm.c      **** 
+ 142:vf_pwm.c      **** bool VFPWMConfig(uint8 pio_bank, uint8 pio_bit0, uint8 pio_bit1,bool invert)
+ 143:vf_pwm.c      **** {
+ 144:vf_pwm.c      **** 	switch(pio_bank)
+ 145:vf_pwm.c      **** 	{
+ 146:vf_pwm.c      **** 	case 0:
+ 147:vf_pwm.c      **** 		pwm_pio_reg=0x80;
+ 148:vf_pwm.c      **** 		pwm_pio_drive_reg=0xc0;
+ 149:vf_pwm.c      **** 		break;
+ 150:vf_pwm.c      **** 	case 1:
+ 151:vf_pwm.c      **** 		pwm_pio_reg=0x90;
+ 152:vf_pwm.c      **** 		pwm_pio_drive_reg=0xc8;
+ 153:vf_pwm.c      **** 		break;
+ 154:vf_pwm.c      **** 	case 2:
+ 155:vf_pwm.c      **** 		pwm_pio_reg=0xa0;
+ 156:vf_pwm.c      **** 		pwm_pio_drive_reg=0xd8;
+ 157:vf_pwm.c      **** 		break;	
+ 158:vf_pwm.c      **** 	case 3:
+ 159:vf_pwm.c      **** 		pwm_pio_reg=0xb0;
+ 160:vf_pwm.c      **** 		pwm_pio_drive_reg=0xe8;
+ 161:vf_pwm.c      **** 		break;
+ 162:vf_pwm.c      **** 	default:
+ 163:vf_pwm.c      **** 		return 0;
+ 164:vf_pwm.c      **** 	}
+ 165:vf_pwm.c      **** 
+ 166:vf_pwm.c      **** 	pwm0_pio_mask=1L<<pio_bit0;
+ 167:vf_pwm.c      **** 	pwm1_pio_mask=1L<<pio_bit1;
+ 168:vf_pwm.c      **** 
+ 169:vf_pwm.c      ****     
+ 170:vf_pwm.c      ****     pwm_inverted = invert;
+ 171:vf_pwm.c      **** 
+ 172:vf_pwm.c      ****     SleepModeChange(sleep_mode_shallow);
+ 173:vf_pwm.c      **** 	PioCtrlrClock(TRUE);
+ 174:vf_pwm.c      ****     
+ 175:vf_pwm.c      **** 	return 1;
+ 176:vf_pwm.c      **** }
+ 177:vf_pwm.c      **** 
+ 178:vf_pwm.c      **** bool VFPWMStart(uint8 width0, uint8 width1)
+ 179:vf_pwm.c      **** {
+ 180:vf_pwm.c      **** 	uint16 buffer[1+MAX_LENGTH_IN_BYTES/2];
+ 181:vf_pwm.c      **** 	pio_ctrlr_code_buffer cb;
+ 182:vf_pwm.c      **** 	uint16 counter, previous_counter=0;
+ 183:vf_pwm.c      **** 	uint16 pattern = pwm0_pio_mask|pwm1_pio_mask;
+ 184:vf_pwm.c      **** 
+ 185:vf_pwm.c      **** 	init_buffer(&cb, buffer, 2*(sizeof buffer)/sizeof buffer[0]);
+ 186:vf_pwm.c      **** 
+ 187:vf_pwm.c      **** 	if(!write_header(&cb)) return 0;
+ 188:vf_pwm.c      **** 	
+ 189:vf_pwm.c      **** 	for(counter=0; counter<255; counter++)
+ 190:vf_pwm.c      **** 	{
+ 191:vf_pwm.c      **** 		if(counter==width0 ||
+ 192:vf_pwm.c      **** 		counter==width1 ||
+ 193:vf_pwm.c      **** 		counter==254)
+ 194:vf_pwm.c      **** 		{
+ 195:vf_pwm.c      **** 			if(counter>0) {
+ 196:vf_pwm.c      **** 				uint16 gap=counter-previous_counter;
+ 197:vf_pwm.c      **** 				if(!write_output(&cb, pattern, gap-1))return 0;
+ 198:vf_pwm.c      **** 				if(gap>1)
+ 199:vf_pwm.c      **** 				if(!write_loop(&cb))return 0;
+ 200:vf_pwm.c      **** 			}
+ 201:vf_pwm.c      **** 
+ 202:vf_pwm.c      **** 			pattern = 0;
+ 203:vf_pwm.c      **** 			if(width0 > counter) pattern |= pwm0_pio_mask;
+ 204:vf_pwm.c      **** 			if(width1 > counter) pattern |= pwm1_pio_mask;
+ 205:vf_pwm.c      **** 			
+ 206:vf_pwm.c      **** 			previous_counter = counter;
+ 207:vf_pwm.c      **** 		} else if(counter==0)
+ 208:vf_pwm.c      **** 		{
+ 209:vf_pwm.c      **** 			previous_counter = counter;
+ 210:vf_pwm.c      **** 		}
+ 211:vf_pwm.c      **** 	}
+ 212:vf_pwm.c      **** 
+ 213:vf_pwm.c      **** 	if(!write_end(&cb, pattern)) return 0;
+ 214:vf_pwm.c      **** 
+ 215:vf_pwm.c      ****     PioCtrlrStop();
+ 216:vf_pwm.c      **** 	PioCtrlrInit(cb.buffer-0x2000); /* This function expects code from CODE space */
+ 217:vf_pwm.c      ****     PioCtrlrStart();
+ 218:vf_pwm.c      **** 
+ 219:vf_pwm.c      ****     return 1;
+ 220:vf_pwm.c      **** }
+ 221:vf_pwm.c      **** void VFPWMStop(void)
+ 222:vf_pwm.c      **** {
+ 127                 	4 0
+ 223:vf_pwm.c      **** 	PioCtrlrStop();
+ 128                 	bra	PioCtrlrStop
+ 129 0000 00 00 00 00 	.LFE10:
+ 129      00 E0 
+ 130                 		.size	VFPWMStop, .-VFPWMStop
+ 131                 		.global	__size_of_VFPWMStop
+ 132                 		.equ	__size_of_VFPWMStop,. - VFPWMStop
+ 133                 		.section	.text.VFPWMStart,"ax",@progbits
+ 134                 		.global	VFPWMStart
+ 135                 		.type	VFPWMStart, @function
+ 136                 	VFPWMStart:
+ 137                 	.LFB9:
+ 138                 		.loc 1 180 0
+ 180:vf_pwm.c      **** {
+ 139                 	er	#0x0029
+ 140                 	.LCFI1:
+ 141 0000 29 0B       		st	AL,@(0x0026,Y)
+ 142                 		st	AH,@(0x0027,Y)
+ 143 0001 26 27       		.loc 1 184 0
+ 144 0002 27 23       		ld	AL,@pwm0_pio_mask
+ 184:vf_pwm.c      **** 	uint16 pattern = pwm0_pio_mask|pwm1_pio_mask;
+ 145                 	
+ 146 0003 00 00 00 15 		st	AL,@(0x0020,Y)
+ 147                 	.LVL8:
+ 148 0005 20 27       		ld	X,@pwm1_pio_mask
+ 149                 		st	X,@(0x0025,Y)
+ 150 0006 00 00 00 19 		or	X,@$XAP_AL
+ 151 0008 25 2B       		st	X,@(0x0023,Y)
+ 152 0009 00 00 00 B9 	.LVL9:
+ 153 000b 23 2B       	.LBB15:
+ 154                 	.LBB16:
+ 155                 		.loc 1 56 0
+ 156                 		ld	AL,@$XAP_UY
+  56:vf_pwm.c      **** 	p->buffer = buffer;
+ 157                 	0008
+ 158 000c 00 00 00 15 		st	AL,@(0x0001,Y)
+ 159 000e 08 34       		.loc 1 57 0
+ 160 000f 01 27       		ld	X,#0x0030
+  57:vf_pwm.c      **** 	p->length = length;
+ 161                 	X,@(0x0003,Y)
+ 162 0010 30 18       		.loc 1 58 0
+ 163 0011 03 2B       		ld	AL,#0x0002
+  58:vf_pwm.c      **** 	p->index = 2; /* the first word is for size (in byte) */
+ 164                 		AL,@(0x0002,Y)
+ 165 0012 02 14       		ld	X,@$XAP_UY
+ 166 0013 02 27       		add	X,#0x0008
+ 167 0014 00 00 00 19 	.LVL10:
+ 168 0016 08 38       	.L16:
+ 169                 		.loc 1 60 0
+ 170                 		ld	AL,#0x0000
+  60:vf_pwm.c      **** 	for(i=0;i<length;i++) buffer[i]=0;
+ 171                 	@(0,X)
+ 172 0017 00 14       		add	X,#0x0001
+ 173 0018 00 26       		ld	AL,@$XAP_UY
+ 174 0019 01 38       		add	AL,#0x0020
+ 175 001a 00 00 00 15 		cmp	X,@$XAP_AL
+ 176 001c 20 34       		bne	.L16
+ 177 001d 00 00 00 89 	.LBE16:
+ 178 001f 00 00 00 00 	.LBE15:
+ 178      00 F0 
+ 179                 	.LBB17:
+ 180                 	.LBB18:
+ 181                 		.loc 1 93 0
+ 182                 		ld	AL,@pwm_pio_reg
+  93:vf_pwm.c      ****     header[0]=(pwm_pio_reg<<8)|0x79; /* mov r1, Px */
+ 183                 	
+ 184 0022 00 00 00 15 		or	AL,#0x0079
+ 185 0024 08 A0       		st	AL,@(0x0004,Y)
+ 186 0025 79 B4       		.loc 1 94 0
+ 187 0026 04 27       		ld	X,#0x0178
+  94:vf_pwm.c      **** 	header[1]=0x0178; /* mov r0, 1 */
+ 188                 	X,@(0x0005,Y)
+ 189 0027 01 00 78 18 		.loc 1 95 0
+ 190 0029 05 2B       		ld	AL,@pwm_pio_drive_reg
+  95:vf_pwm.c      **** 	header[2]=0x75|(pwm_pio_drive_reg<<8); /* mov Px_DRIVE_EN, mask */
+ 191                 	l	#0x0008
+ 192 002a 00 00 00 15 		or	AL,#0x0075
+ 193 002c 08 A0       		st	AL,@(0x0006,Y)
+ 194 002d 75 B4       		.loc 1 96 0
+ 195 002e 06 27       		ld	AL,@(0x0023,Y)
+  96:vf_pwm.c      ****     header[3]=pwm0_pio_mask|pwm1_pio_mask;
+ 196                 	L,@(0x0007,Y)
+ 197 002f 23 17       	.LBE18:
+ 198 0030 07 27       		.loc 1 98 0
+ 199                 		ld	X,#0x0007
+  98:vf_pwm.c      ****     return write_buffer(p, header, 7);
+ 200                 	X,@(0,Y)
+ 201 0031 07 18       		ld	AL,@$XAP_UY
+ 202 0032 00 2B       		add	AL,#0x0001
+ 203 0033 00 00 00 15 		ld	AH,@$XAP_UY
+ 204 0035 01 34       		add	AH,#0x0004
+ 205 0036 00 00 00 11 		bsr	write_buffer
+ 206 0038 04 30       	.LBE17:
+ 207 0039 00 00 00 00 		.loc 1 188 0
+ 207      00 9C 
+ 208                 		tst	@$XAP_AL
+ 188:vf_pwm.c      **** 	if(!write_header(&cb)) return 0;
+ 209                 	
+ 210 003c 00 00 00 99 	.LBB19:
+ 211 003e 00 00 00 00 	.LBB20:
+ 211      00 F4 
+ 212                 	.LBB21:
+ 213                 		.loc 1 105 0
+ 214                 		ld	AL,@pwm_inverted
+ 105:vf_pwm.c      ****     if(pwm_inverted) pattern = (~pattern)&0xff;
+ 215                 	L,@(0x0021,Y)
+ 216 0041 00 00 00 15 		ld	AL,#0x0000
+ 217 0043 21 27       	.LVL11:
+ 218 0044 00 14       		st	AL,@(0x0024,Y)
+ 219                 	.LVL12:
+ 220 0045 24 27       	.L29:
+ 221                 	.LBE21:
+ 222                 	.LBE20:
+ 223                 	.LBE19:
+ 224                 		.loc 1 192 0
+ 225                 		ld	X,@(0x0024,Y)
+ 192:vf_pwm.c      **** 		if(counter==width0 ||
+ 226                 	0026,Y)
+ 227 0046 24 1B       		beq	.L18
+ 228 0047 26 8B       		cmp	X,@(0x0027,Y)
+ 229 0048 00 00 00 00 		beq	.L18
+ 229      00 F4 
+ 230 004b 27 8B       		cmp	X,#0x00fe
+ 231 004c 00 00 00 00 		bne	.L38
+ 231      00 F4 
+ 232 004f 01 00 FE 88 		bra	.L19
+ 233 0051 00 00 00 00 	.L18:
+ 233      00 F0 
+ 234 0054 00 00 00 00 		.loc 1 196 0
+ 234      00 E0 
+ 235                 		tst	@(0x0024,Y)
+ 196:vf_pwm.c      **** 			if(counter>0) {
+ 236                 	.L19:
+ 237 0057 24 9B       	.LBB25:
+ 238 0058 00 00 00 00 		.loc 1 197 0
+ 238      00 F4 
+ 239                 		ld	X,@(0x0024,Y)
+ 240                 		sub	X,@$XAP_AL
+ 197:vf_pwm.c      **** 				uint16 gap=counter-previous_counter;
+ 241                 	,@(0x0022,Y)
+ 242 005b 24 1B       	.LVL13:
+ 243 005c 00 00 00 59 	.LBB23:
+ 244 005e 22 2B       	.LBB22:
+ 245                 		.loc 1 105 0
+ 246                 		tst	@(0x0021,Y)
+ 247                 		beq	.L22
+ 105:vf_pwm.c      ****     if(pwm_inverted) pattern = (~pattern)&0xff;
+ 248                 	@(0x0023,Y)
+ 249 005f 21 9B       	.LVL14:
+ 250 0060 00 00 00 00 		xor	AL,#0xffff
+ 250      00 F4 
+ 251 0063 23 17       		and	AL,#0x00ff
+ 252                 		st	AL,@(0x0023,Y)
+ 253 0064 FF D4       	.LVL15:
+ 254 0065 01 00 FF C4 	.L22:
+ 255 0067 23 27       		.loc 1 107 0
+ 256                 		ld	AL,@(0x0023,Y)
+ 257                 	.LVL16:
+ 107:vf_pwm.c      ****     temp[0]=(pattern<<8)|0x77; /* mov @r1, pattern */
+ 258                 	08
+ 259 0068 23 17       		or	AL,#0x0077
+ 260                 		st	AL,@(0x0004,Y)
+ 261 0069 08 A0       		.loc 1 108 0
+ 262 006a 77 B4       		ld	AL,@(0x0022,Y)
+ 263 006b 04 27       		add	AL,#0xffff
+ 108:vf_pwm.c      **** 	temp[1]=(count<<8)|0x74; /* mov a, count */
+ 264                 	0x0008
+ 265 006c 22 17       		or	AL,#0x0074
+ 266 006d FF 34       		st	AL,@(0x0005,Y)
+ 267 006e 08 A0       	.LBE22:
+ 268 006f 74 B4       		.loc 1 110 0
+ 269 0070 05 27       		ld	X,#0x0004
+ 270                 		st	X,@(0,Y)
+ 110:vf_pwm.c      ****     return write_buffer(p, temp, 4);
+ 271                 	@$XAP_UY
+ 272 0071 04 18       		add	AL,#0x0001
+ 273 0072 00 2B       		ld	AH,@$XAP_UY
+ 274 0073 00 00 00 15 		add	AH,#0x0004
+ 275 0075 01 34       		bsr	write_buffer
+ 276 0076 00 00 00 11 	.LBE23:
+ 277 0078 04 30       		.loc 1 198 0
+ 278 0079 00 00 00 00 		tst	@$XAP_AL
+ 278      00 9C 
+ 279                 		beq	.L17
+ 198:vf_pwm.c      **** 				if(!write_output(&cb, pattern, gap-1))return 0;
+ 280                 	99 0
+ 281 007c 00 00 00 99 		ld	AL,@(0x0022,Y)
+ 282 007e 00 00 00 00 		cmp	AL,#0x0001
+ 282      00 F4 
+ 199:vf_pwm.c      **** 				if(gap>1)
+ 283                 	z	.L21
+ 284 0081 22 17       	.LBB24:
+ 285 0082 01 84       		.loc 1 120 0
+ 286 0083 00 00 00 00 		ld	X,#0x0003
+ 286      00 2C 
+ 287                 		st	X,@(0,Y)
+ 120:vf_pwm.c      ****     return write_buffer(p, loop, 3);
+ 288                 	L,@$XAP_UY
+ 289 0086 03 18       		add	AL,#0x0001
+ 290 0087 00 2B       		ld	AH,#loop.982.
+ 291 0088 00 00 00 15 		bsr	write_buffer
+ 292 008a 01 34       	.LBE24:
+ 293 008b 00 00 00 10 		.loc 1 200 0
+ 294 008d 00 00 00 00 		tst	@$XAP_AL
+ 294      00 9C 
+ 295                 		beq	.L17
+ 200:vf_pwm.c      **** 				if(!write_loop(&cb))return 0;
+ 296                 	.L21:
+ 297 0090 00 00 00 99 	.LBE25:
+ 298 0092 00 00 00 00 		.loc 1 204 0
+ 298      00 F4 
+ 299                 		ld	AL,@(0x0026,Y)
+ 300                 	.LVL18:
+ 301                 		cmp	AL,@(0x0024,Y)
+ 204:vf_pwm.c      **** 			if(width0 > counter) pattern |= pwm0_pio_mask;
+ 302                 	L34
+ 303 0095 26 17       		bra	.L42
+ 304                 	.L34:
+ 305 0096 24 87       		ld	X,#0x0000
+ 306 0097 00 00 00 00 		st	X,@(0x0023,Y)
+ 306      00 2C 
+ 307 009a 00 00 00 00 	.LVL19:
+ 307      00 E0 
+ 308                 		bra	.L25
+ 309 009d 00 18       	.L42:
+ 310 009e 23 2B       		ld	AL,@(0x0020,Y)
+ 311                 		st	AL,@(0x0023,Y)
+ 312 009f 00 00 00 00 	.LVL20:
+ 312      00 E0 
+ 313                 	.L25:
+ 314 00a2 20 17       		.loc 1 205 0
+ 315 00a3 23 27       		ld	X,@(0x0027,Y)
+ 316                 		cmp	X,@(0x0024,Y)
+ 317                 		bcz	.L41
+ 205:vf_pwm.c      **** 			if(width1 > counter) pattern |= pwm1_pio_mask;
+ 318                 	Y)
+ 319 00a4 27 1B       		or	AL,@(0x0025,Y)
+ 320 00a5 24 8B       		st	AL,@(0x0023,Y)
+ 321 00a6 00 00 00 00 	.LVL21:
+ 321      00 2C 
+ 322 00a9 23 17       	.L41:
+ 323 00aa 25 B7       		ld	AL,@(0x0024,Y)
+ 324 00ab 23 27       	.LVL22:
+ 325                 		bra	.L28
+ 326                 	.L38:
+ 327 00ac 24 17       		.loc 1 208 0
+ 328                 		tst	@(0x0024,Y)
+ 329 00ad 00 00 00 00 		bne	.L28
+ 329      00 E0 
+ 330                 		ld	AL,#0x0000
+ 208:vf_pwm.c      **** 		} else if(counter==0)
+ 331                 	 190 0
+ 332 00b0 24 9B       		ld	X,@(0x0024,Y)
+ 333 00b1 00 00 00 00 		add	X,#0x0001
+ 333      00 F0 
+ 334 00b4 00 14       		st	X,@(0x0024,Y)
+ 335                 	.LVL23:
+ 190:vf_pwm.c      **** 	for(counter=0; counter<255; counter++)
+ 336                 	X,#0x00ff
+ 337 00b5 24 1B       		bne	.L29
+ 338 00b6 01 38       	.LBB26:
+ 339 00b7 24 2B       	.LBB27:
+ 340                 		.loc 1 127 0
+ 341 00b8 01 00 FF 88 		tst	@(0x0021,Y)
+ 342 00ba 00 00 00 00 		beq	.L30
+ 342      00 F0 
+ 343                 		ld	AL,@(0x0023,Y)
+ 344                 	.LVL24:
+ 127:vf_pwm.c      ****     if(pwm_inverted) pattern = (~pattern)&0xff;
+ 345                 	0xffff
+ 346 00bd 21 9B       		and	AL,#0x00ff
+ 347 00be 00 00 00 00 		st	AL,@(0x0023,Y)
+ 347      00 F4 
+ 348 00c1 23 17       	.LVL25:
+ 349                 	.L30:
+ 350 00c2 FF D4       		.loc 1 129 0
+ 351 00c3 01 00 FF C4 		ld	AL,@(0x0023,Y)
+ 352 00c5 23 27       	.LVL26:
+ 353                 		asl	#0x0008
+ 354                 		or	AL,#0x0077
+ 129:vf_pwm.c      ****     temp[0]=(pattern<<8)|0x77;  /* mov @r1, pattern */
+ 355                 	x0004,Y)
+ 356 00c6 23 17       		.loc 1 130 0
+ 357                 		ld	X,#0x0701
+ 358 00c7 08 A0       		st	X,@(0x0005,Y)
+ 359 00c8 77 B4       	.LBE27:
+ 360 00c9 04 27       		.loc 1 132 0
+ 130:vf_pwm.c      **** 	temp[1]=0x0701; /* ajmp 0x07 */
+ 361                 	,#0x0004
+ 362 00ca 07 00 01 18 		st	AL,@(0,Y)
+ 363 00cc 05 2B       		ld	AL,@$XAP_UY
+ 364                 		add	AL,#0x0001
+ 132:vf_pwm.c      ****     if(write_buffer(p, temp, 4))
+ 365                 	AH,@$XAP_UY
+ 366 00cd 04 14       		add	AH,#0x0004
+ 367 00ce 00 27       		bsr	write_buffer
+ 368 00cf 00 00 00 15 	.LBB28:
+ 369 00d1 01 34       		tst	@$XAP_AL
+ 370 00d2 00 00 00 11 		beq	.L17
+ 371 00d4 04 30       		.loc 1 134 0
+ 372 00d5 00 00 00 00 		ld	X,@(0x0001,Y)
+ 372      00 9C 
+ 373                 		ld	AL,@(0x0002,Y)
+ 374 00d8 00 00 00 99 		add	AL,#0xfffe
+ 375 00da 00 00 00 00 		st	AL,@(0,X)
+ 375      00 F4 
+ 134:vf_pwm.c      **** 		p->buffer[0]=p->index-2; /* number of code bytes */
+ 376                 	 0
+ 377 00dd 01 1B       		ld	X,@(0x0001,Y)
+ 378 00de 02 17       		ld	AH,@(0,X)
+ 379 00df FE 34       	.LBE28:
+ 380 00e0 00 26       		ld	AL,@$XAP_AH
+ 135:vf_pwm.c      ****         if(p->buffer[0]&1) /* PioCtrlrInit requires an even number here */
+ 381                 	AL,#0x0001
+ 382 00e1 01 1B       		beq	.L31
+ 383 00e2 00 12       	.LBB29:
+ 384                 		.loc 1 136 0
+ 385 00e3 00 00 00 15 		add	AH,#0x0001
+ 386 00e5 01 C4       		st	AH,@(0,X)
+ 387 00e6 00 00 00 00 		bra	.L31
+ 387      00 F4 
+ 388                 	.L17:
+ 136:vf_pwm.c      ****             p->buffer[0]++;
+ 389                 	0x0000
+ 390 00e9 01 30       	.L32:
+ 391 00ea 00 22       	.LBE29:
+ 392 00eb 00 00 00 00 	.LBE26:
+ 392      00 E0 
+ 393                 		.loc 1 221 0
+ 394 00ee 00 14       		leave	#0x0029
+ 395                 	.L31:
+ 396                 		.loc 1 216 0
+ 397                 		bsr	PioCtrlrStop
+ 221:vf_pwm.c      **** }
+ 398                 	17 0
+ 399 00ef 29 0F       		ld	AL,@(0x0001,Y)
+ 400                 		add	AL,#0xe000
+ 216:vf_pwm.c      ****     PioCtrlrStop();
+ 401                 	r	PioCtrlrInit
+ 402 00f0 00 00 00 00 		.loc 1 218 0
+ 402      00 9C 
+ 217:vf_pwm.c      **** 	PioCtrlrInit(cb.buffer-0x2000); /* This function expects code from CODE space */
+ 403                 	sr	PioCtrlrStart
+ 404 00f3 01 17       		ld	AL,#0x0001
+ 405 00f4 E0 00 00 34 		bra	.L32
+ 406 00f6 00 00 00 00 	.LFE9:
+ 406      00 9C 
+ 218:vf_pwm.c      ****     PioCtrlrStart();
+ 407                 	ze	VFPWMStart, .-VFPWMStart
+ 408 00f9 00 00 00 00 		.global	__size_of_VFPWMStart
+ 408      00 9C 
+ 409 00fc 01 14       		.equ	__size_of_VFPWMStart,. - VFPWMStart
+ 410 00fd 00 00 00 00 		.section	.text.VFPWMConfig,"ax",@progbits
+ 410      00 E0 
+ 411                 		.global	VFPWMConfig
+ 412                 		.type	VFPWMConfig, @function
+ 413                 	VFPWMConfig:
+ 414                 	.LFB8:
+ 415                 		.loc 1 144 0
+ 416                 	.LVL27:
+ 417                 		enter	#0x0001
+ 418                 	.LCFI2:
+ 419                 		ld	X,@$XAP_AH
+ 144:vf_pwm.c      **** {
+ 420                 	
+ 421                 		cmp	AL,#0x0001
+ 422 0000 01 0B       		beq	.L46
+ 423                 	.LVL28:
+ 424 0001 00 00 00 19 		cmp	AL,#0x0001
+ 145:vf_pwm.c      **** 	switch(pio_bank)
+ 425                 		.L45
+ 426 0003 01 84       		cmp	AL,#0x0002
+ 427 0004 00 00 00 00 		beq	.L47
+ 427      00 F4 
+ 428                 		cmp	AL,#0x0003
+ 429 0007 01 84       		beq	.L48
+ 430 0008 00 00 00 00 		ld	AL,#0x0000
+ 430      00 FC 
+ 431 000b 02 84       	.LVL29:
+ 432 000c 00 00 00 00 		bra	.L49
+ 432      00 F4 
+ 433 000f 03 84       	.LVL30:
+ 434 0010 00 00 00 00 	.L45:
+ 434      00 F4 
+ 435 0013 00 14       		.loc 1 148 0
+ 436                 		ld	AL,#0x0080
+ 437 0014 00 00 00 00 	.LVL31:
+ 437      00 E0 
+ 438                 		st	AL,@pwm_pio_reg
+ 439                 		.loc 1 149 0
+ 148:vf_pwm.c      **** 		pwm_pio_reg=0x80;
+ 440                 	
+ 441 0017 01 00 80 14 		bra	.L52
+ 442                 	.LVL32:
+ 443 0019 00 00 00 25 	.L46:
+ 149:vf_pwm.c      **** 		pwm_pio_drive_reg=0xc0;
+ 444                 	oc 1 152 0
+ 445 001b 40 34       		ld	AL,#0x0090
+ 446 001c 00 00 00 00 	.LVL33:
+ 446      00 E0 
+ 447                 		bra	.L53
+ 448                 	.LVL34:
+ 152:vf_pwm.c      **** 		pwm_pio_reg=0x90;
+ 449                 	
+ 450 001f 01 00 90 14 		.loc 1 156 0
+ 451                 		ld	AL,#0x00a0
+ 452 0021 00 00 00 00 	.LVL35:
+ 452      00 E0 
+ 453                 		bra	.L53
+ 454                 	.LVL36:
+ 156:vf_pwm.c      **** 		pwm_pio_reg=0xa0;
+ 455                 	
+ 456 0024 01 00 A0 14 		.loc 1 160 0
+ 457                 		ld	AL,#0x00b0
+ 458 0026 00 00 00 00 	.LVL37:
+ 458      00 E0 
+ 459                 	.L53:
+ 460                 		st	AL,@pwm_pio_reg
+ 160:vf_pwm.c      **** 		pwm_pio_reg=0xb0;
+ 461                 	 1 161 0
+ 462 0029 01 00 B0 14 		add	AL,#0x0038
+ 463                 	.L52:
+ 464                 		st	AL,@pwm_pio_drive_reg
+ 465 002b 00 00 00 25 		.loc 1 167 0
+ 161:vf_pwm.c      **** 		pwm_pio_drive_reg=0xe8;
+ 466                 	H,#0x0000
+ 467 002d 38 34       		ld	AL,#0x0001
+ 468                 		asl	@$XAP_UXL
+ 469 002e 00 00 00 25 		st	AL,@pwm0_pio_mask
+ 167:vf_pwm.c      **** 	pwm0_pio_mask=1L<<pio_bit0;
+ 470                 	c 1 168 0
+ 471 0030 00 10       		ld	AH,#0x0000
+ 472 0031 01 14       		ld	AL,#0x0001
+ 473 0032 00 00 00 A1 		asl	@(0x0001,Y)
+ 474 0034 00 00 00 25 		st	AL,@pwm1_pio_mask
+ 168:vf_pwm.c      **** 	pwm1_pio_mask=1L<<pio_bit1;
+ 475                 	 1 171 0
+ 476 0036 00 10       		ld	AL,@(0x0002,Y)
+ 477 0037 01 14       		st	AL,@pwm_inverted
+ 478 0038 01 A3       		.loc 1 173 0
+ 479 0039 00 00 00 25 		ld	AL,#0x0002
+ 171:vf_pwm.c      ****     pwm_inverted = invert;
+ 480                 	SleepModeChange
+ 481 003b 02 17       	.LVL38:
+ 482 003c 00 00 00 25 		.loc 1 174 0
+ 173:vf_pwm.c      ****     SleepModeChange(sleep_mode_shallow);
+ 483                 		AL,#0x0001
+ 484 003e 02 14       		bsr	PioCtrlrClock
+ 485 003f 00 00 00 00 		ld	AL,#0x0001
+ 485      00 9C 
+ 486                 	.LVL39:
+ 174:vf_pwm.c      **** 	PioCtrlrClock(TRUE);
+ 487                 	:
+ 488 0042 01 14       		.loc 1 177 0
+ 489 0043 00 00 00 00 		leave	#0x0001
+ 489      00 9C 
+ 490 0046 01 14       	.LVL40:
+ 491                 	.LFE8:
+ 492                 		.size	VFPWMConfig, .-VFPWMConfig
+ 177:vf_pwm.c      **** }
+ 493                 	al	__size_of_VFPWMConfig
+ 494 0047 01 0F       		.equ	__size_of_VFPWMConfig,. - VFPWMConfig
+ 495                 		.section	.data.loop.982.,"aw",@progbits
+ 496                 		.type	loop.982., @object
+ 497                 		.size	loop.982., 2
+ 498                 	loop.982.:
+ 499                 		.word	0x7098
+ 500                 		.word	0x00fd
+ 501                 		.section	.bss.pwm_pio_reg,"aw",@nobits
+ 502                 		.type	pwm_pio_reg, @object
+ 503                 		.size	pwm_pio_reg, 1
+ 504 0000 70 98       	pwm_pio_reg:
+ 505 0001 00 FD       		.space	1
+ 506                 		.section	.bss.pwm_pio_drive_reg,"aw",@nobits
+ 507                 		.type	pwm_pio_drive_reg, @object
+ 508                 		.size	pwm_pio_drive_reg, 1
+ 509                 	pwm_pio_drive_reg:
+ 510 0000 00 00       		.space	1
+ 511                 		.section	.bss.pwm0_pio_mask,"aw",@nobits
+ 512                 		.type	pwm0_pio_mask, @object
+ 513                 		.size	pwm0_pio_mask, 1
+ 514                 	pwm0_pio_mask:
+ 515 0000 00 00       		.space	1
+ 516                 		.section	.bss.pwm1_pio_mask,"aw",@nobits
+ 517                 		.type	pwm1_pio_mask, @object
+ 518                 		.size	pwm1_pio_mask, 1
+ 519                 	pwm1_pio_mask:
+ 520 0000 00 00       		.space	1
+ 521                 		.section	.bss.pwm_inverted,"aw",@nobits
+ 522                 		.type	pwm_inverted, @object
+ 523                 		.size	pwm_inverted, 1
+ 524                 	pwm_inverted:
+ 525 0000 00 00       		.space	1
+ 526                 		.section	.debug_frame,"",@progbits
+ 527                 	.Lframe0:
+ 528                 		.4byte	.LECIE0-.LSCIE0
+ 529                 	.LSCIE0:
+ 530 0000 00 00       		.4byte	0xffffffff
+ 531                 		.1byte	0x1
+ 532                 		.ascii "\000"
+ 533 0000 00 00 00 00 		.1byte	0x1
+ 534                 		.1byte	0x7f
+ 535 0002 FF FF FF FF 		.1byte	0x3
+ 536 0004 01          		.1byte	0xc
+ 537 0004 00          		.1byte	0x5
+ 538 0005 01          		.1byte	0x0
+ 539 0005 7F          		.p2align	2
+ 540 0006 03          	.LECIE0:
+ 541 0006 0C          	.LSFDE0:
+ 542 0007 05          		.4byte	.LEFDE0-.LASFDE0
+ 543 0007 00          	.LASFDE0:
+ 544                 		.4byte	.Lframe0
+ 545                 		.4byte	.LFB3
+ 546                 		.4byte	.LFE3-.LFB3
+ 547 0008 00 00 00 00 		.1byte	0x4
+ 548                 		.4byte	.LCFI0-.LFB3
+ 549 000a 00 00 00 00 		.1byte	0xe
+ 550 000c 00 00 00 00 		.1byte	0x1
+ 551 000e 00 00 00 00 		.1byte	0x83
+ 552 0010 41          		.1byte	0x1
+ 553                 		.p2align	2
+ 554 0010 0E          	.LEFDE0:
+ 555 0011 01          	.LSFDE2:
+ 556 0011 83          		.4byte	.LEFDE2-.LASFDE2
+ 557 0012 01          	.LASFDE2:
+ 558 0012 00 00 00    		.4byte	.Lframe0
+ 559                 		.4byte	.LFB10
+ 560                 		.4byte	.LFE10-.LFB10
+ 561 0014 00 00 00 00 		.p2align	2
+ 562                 	.LEFDE2:
+ 563 0016 00 00 00 00 	.LSFDE4:
+ 564 0018 00 00 00 00 		.4byte	.LEFDE4-.LASFDE4
+ 565 001a 00 00 00 00 	.LASFDE4:
+ 566                 		.4byte	.Lframe0
+ 567                 		.4byte	.LFB9
+ 568                 		.4byte	.LFE9-.LFB9
+ 569 001c 00 00 00 00 		.1byte	0x4
+ 570                 		.4byte	.LCFI1-.LFB9
+ 571 001e 00 00 00 00 		.1byte	0xe
+ 572 0020 00 00 00 00 		.1byte	0x29
+ 573 0022 00 00 00 00 		.1byte	0x83
+ 574 0024 41          		.1byte	0x1
+ 575                 		.p2align	2
+ 576 0024 0E          	.LEFDE4:
+ 577 0025 29          	.LSFDE6:
+ 578 0025 83          		.4byte	.LEFDE6-.LASFDE6
+ 579 0026 01          	.LASFDE6:
+ 580 0026 00 00 00    		.4byte	.Lframe0
+ 581                 		.4byte	.LFB8
+ 582                 		.4byte	.LFE8-.LFB8
+ 583 0028 00 00 00 00 		.1byte	0x4
+ 584                 		.4byte	.LCFI2-.LFB8
+ 585 002a 00 00 00 00 		.1byte	0xe
+ 586 002c 00 00 00 00 		.1byte	0x1
+ 587 002e 00 00 00 00 		.1byte	0x83
+ 588 0030 41          		.1byte	0x1
+ 589                 		.p2align	2
+ 590 0030 0E          	.LEFDE6:
+ 591 0031 01          		.text
+ 592 0031 83          	.Letext0:
+ 593 0032 01          		.section	.debug_loc,"",@progbits
+ 594 0032 00 00 00    	.Ldebug_loc0:
+ 595                 	.LLST0:
+ 596                 		.4byte	.LFB3
+ 597                 		.4byte	.LCFI0
+ 598                 		.2byte	0x1
+ 599                 		.1byte	0x55
+ 600                 		.4byte	.LCFI0
+ 601 0000 00 00 00 00 		.4byte	.LFE3
+ 602 0002 00 00 00 00 		.2byte	0x2
+ 603 0004 00 01       		.1byte	0x75
+ 604 0005 55          		.1byte	0x1
+ 605 0005 00 00 00 00 		.4byte	0x0
+ 606 0007 00 00 00 00 		.4byte	0x0
+ 607 0009 00 02       	.LLST1:
+ 608 000a 75          		.4byte	.LVL0
+ 609 000b 01          		.4byte	.LVL1
+ 610 000b 00 00 00 00 		.2byte	0x1
+ 611 000d 00 00 00 00 		.1byte	0x51
+ 612                 		.4byte	.LVL1
+ 613 000f 00 00 00 00 		.4byte	.LFE3
+ 614 0011 00 00 00 00 		.2byte	0x1
+ 615 0013 00 01       		.1byte	0x5b
+ 616 0014 51          		.4byte	0x0
+ 617 0015 00 00 00 00 		.4byte	0x0
+ 618 0017 00 00 00 00 	.LLST2:
+ 619 0019 00 01       		.4byte	.LVL0
+ 620 001a 5B          		.4byte	.LVL2
+ 621 001a 00 00 00 00 		.2byte	0x1
+ 622 001c 00 00 00 00 		.1byte	0x50
+ 623                 		.4byte	.LVL2
+ 624 001e 00 00 00 00 		.4byte	.LFE3
+ 625 0020 00 00 00 00 		.2byte	0x1
+ 626 0022 00 01       		.1byte	0x5c
+ 627 0023 50          		.4byte	0x0
+ 628 0024 00 00 00 00 		.4byte	0x0
+ 629 0026 00 00 00 00 	.LLST3:
+ 630 0028 00 01       		.4byte	.LVL0
+ 631 0029 5C          		.4byte	.LVL2
+ 632 0029 00 00 00 00 		.2byte	0x2
+ 633 002b 00 00 00 00 		.1byte	0x91
+ 634                 		.1byte	0x0
+ 635 002d 00 00 00 00 		.4byte	.LVL2
+ 636 002f 00 00 00 00 		.4byte	.LVL4
+ 637 0031 00 02       		.2byte	0x2
+ 638 0032 91          		.1byte	0x76
+ 639 0033 00          		.1byte	0x1
+ 640 0033 00 00 00 00 		.4byte	.LVL4
+ 641 0035 00 00 00 00 		.4byte	.LVL5
+ 642 0037 00 02       		.2byte	0x2
+ 643 0038 76          		.1byte	0x91
+ 644 0039 01          		.1byte	0x0
+ 645 0039 00 00 00 00 		.4byte	.LVL5
+ 646 003b 00 00 00 00 		.4byte	.LFE3
+ 647 003d 00 02       		.2byte	0x2
+ 648 003e 91          		.1byte	0x76
+ 649 003f 00          		.1byte	0x1
+ 650 003f 00 00 00 00 		.4byte	0x0
+ 651 0041 00 00 00 00 		.4byte	0x0
+ 652 0043 00 02       	.LLST5:
+ 653 0044 76          		.4byte	.LFB9
+ 654 0045 01          		.4byte	.LCFI1
+ 655 0045 00 00 00 00 		.2byte	0x1
+ 656 0047 00 00 00 00 		.1byte	0x55
+ 657                 		.4byte	.LCFI1
+ 658 0049 00 00 00 00 		.4byte	.LFE9
+ 659 004b 00 00 00 00 		.2byte	0x2
+ 660 004d 00 01       		.1byte	0x75
+ 661 004e 55          		.1byte	0x29
+ 662 004f 00 00 00 00 		.4byte	0x0
+ 663 0051 00 00 00 00 		.4byte	0x0
+ 664 0053 00 02       	.LLST6:
+ 665 0054 75          		.4byte	.LVL6
+ 666 0054 29          		.4byte	.LVL7
+ 667 0055 00 00 00 00 		.2byte	0x1
+ 668 0057 00 00 00 00 		.1byte	0x51
+ 669                 		.4byte	.LVL7
+ 670 0059 00 00 00 00 		.4byte	.LFE9
+ 671 005b 00 00 00 00 		.2byte	0x2
+ 672 005d 00 01       		.1byte	0x76
+ 673 005e 51          		.1byte	0x26
+ 674 005e 00 00 00 00 		.4byte	0x0
+ 675 0060 00 00 00 00 		.4byte	0x0
+ 676 0062 00 02       	.LLST7:
+ 677 0063 76          		.4byte	.LVL6
+ 678 0064 26          		.4byte	.LVL10
+ 679 0064 00 00 00 00 		.2byte	0x1
+ 680 0066 00 00 00 00 		.1byte	0x50
+ 681                 		.4byte	.LVL10
+ 682 0068 00 00 00 00 		.4byte	.LFE9
+ 683 006a 00 00 00 00 		.2byte	0x2
+ 684 006c 00 01       		.1byte	0x76
+ 685 006d 50          		.1byte	0x27
+ 686 006e 00 00 00 00 		.4byte	0x0
+ 687 0070 00 00 00 00 		.4byte	0x0
+ 688 0072 00 02       	.LLST8:
+ 689 0073 76          		.4byte	.LVL11
+ 690 0073 27          		.4byte	.LVL14
+ 691 0074 00 00 00 00 		.2byte	0x1
+ 692 0076 00 00 00 00 		.1byte	0x51
+ 693                 		.4byte	.LVL15
+ 694 0078 00 00 00 00 		.4byte	.LVL16
+ 695 007a 00 00 00 00 		.2byte	0x1
+ 696 007c 00 01       		.1byte	0x51
+ 697 007d 51          		.4byte	.LVL17
+ 698 007d 00 00 00 00 		.4byte	.LVL18
+ 699 007f 00 00 00 00 		.2byte	0x1
+ 700 0081 00 01       		.1byte	0x51
+ 701 0082 51          		.4byte	.LVL22
+ 702 0083 00 00 00 00 		.4byte	.LVL24
+ 703 0085 00 00 00 00 		.2byte	0x1
+ 704 0087 00 01       		.1byte	0x51
+ 705 0088 51          		.4byte	.LVL25
+ 706 0088 00 00 00 00 		.4byte	.LVL26
+ 707 008a 00 00 00 00 		.2byte	0x1
+ 708 008c 00 01       		.1byte	0x51
+ 709 008d 51          		.4byte	0x0
+ 710 008e 00 00 00 00 		.4byte	0x0
+ 711 0090 00 00 00 00 	.LLST9:
+ 712 0092 00 01       		.4byte	.LVL8
+ 713 0093 51          		.4byte	.LVL9
+ 714 0093 00 00 00 00 		.2byte	0x2
+ 715 0095 00 00 00 00 		.1byte	0x76
+ 716                 		.1byte	0x20
+ 717 0097 00 00 00 00 		.4byte	.LVL9
+ 718 0099 00 00 00 00 		.4byte	.LFE9
+ 719 009b 00 02       		.2byte	0x2
+ 720 009c 76          		.1byte	0x76
+ 721 009d 20          		.1byte	0x23
+ 722 009d 00 00 00 00 		.4byte	0x0
+ 723 009f 00 00 00 00 		.4byte	0x0
+ 724 00a1 00 02       	.LLST10:
+ 725 00a2 76          		.4byte	.LFB8
+ 726 00a3 23          		.4byte	.LCFI2
+ 727 00a3 00 00 00 00 		.2byte	0x1
+ 728 00a5 00 00 00 00 		.1byte	0x55
+ 729                 		.4byte	.LCFI2
+ 730 00a7 00 00 00 00 		.4byte	.LFE8
+ 731 00a9 00 00 00 00 		.2byte	0x2
+ 732 00ab 00 01       		.1byte	0x75
+ 733 00ac 55          		.1byte	0x1
+ 734 00ad 00 00 00 00 		.4byte	0x0
+ 735 00af 00 00 00 00 		.4byte	0x0
+ 736 00b1 00 02       	.LLST11:
+ 737 00b2 75          		.4byte	.LVL27
+ 738 00b2 01          		.4byte	.LVL29
+ 739 00b3 00 00 00 00 		.2byte	0x1
+ 740 00b5 00 00 00 00 		.1byte	0x51
+ 741                 		.4byte	.LVL30
+ 742 00b7 00 00 00 00 		.4byte	.LVL31
+ 743 00b9 00 00 00 00 		.2byte	0x1
+ 744 00bb 00 01       		.1byte	0x51
+ 745 00bc 51          		.4byte	.LVL32
+ 746 00bc 00 00 00 00 		.4byte	.LVL33
+ 747 00be 00 00 00 00 		.2byte	0x1
+ 748 00c0 00 01       		.1byte	0x51
+ 749 00c1 51          		.4byte	.LVL34
+ 750 00c2 00 00 00 00 		.4byte	.LVL35
+ 751 00c4 00 00 00 00 		.2byte	0x1
+ 752 00c6 00 01       		.1byte	0x51
+ 753 00c7 51          		.4byte	.LVL36
+ 754 00c7 00 00 00 00 		.4byte	.LVL37
+ 755 00c9 00 00 00 00 		.2byte	0x1
+ 756 00cb 00 01       		.1byte	0x51
+ 757 00cc 51          		.4byte	0x0
+ 758 00cd 00 00 00 00 		.4byte	0x0
+ 759 00cf 00 00 00 00 	.LLST12:
+ 760 00d1 00 01       		.4byte	.LVL27
+ 761 00d2 51          		.4byte	.LVL28
+ 762 00d2 00 00 00 00 		.2byte	0x1
+ 763 00d4 00 00 00 00 		.1byte	0x50
+ 764                 		.4byte	.LVL28
+ 765 00d6 00 00 00 00 		.4byte	.LVL38
+ 766 00d8 00 00 00 00 		.2byte	0x1
+ 767 00da 00 01       		.1byte	0x53
+ 768 00db 50          		.4byte	.LVL39
+ 769 00dc 00 00 00 00 		.4byte	.LVL40
+ 770 00de 00 00 00 00 		.2byte	0x1
+ 771 00e0 00 01       		.1byte	0x53
+ 772 00e1 53          		.4byte	.LVL40
+ 773 00e1 00 00 00 00 		.4byte	.LFE8
+ 774 00e3 00 00 00 00 		.2byte	0x1
+ 775 00e5 00 01       		.1byte	0x50
+ 776 00e6 53          		.4byte	0x0
+ 777 00e7 00 00 00 00 		.4byte	0x0
+ 778 00e9 00 00 00 00 		.file 2 "C:/CSR_uEnergy_SDK-2.4.5.13/tools/include/CSR101x_A05/types.h"
+ 779 00eb 00 01       		.file 3 "C:/CSR_uEnergy_SDK-2.4.5.13/tools/include/CSR101x_A05/sleep.h"
+ 780 00ec 50          		.section	.debug_info
+ 781 00ec 00 00 00 00 		.4byte	0x4b5
+ 782 00ee 00 00 00 00 		.2byte	0x2
+ 783                 		.4byte	.Ldebug_abbrev0
+ 784                 		.1byte	0x4
+ 785                 		.1byte	0x1
+ 786 0000 00 00 04 B5 		.4byte	.LASF42
+ 787 0002 00 02       		.1byte	0x1
+ 788 0003 00 00 00 00 		.4byte	.LASF43
+ 789 0005 04          		.4byte	.LASF44
+ 790 0005 01          		.4byte	0x0
+ 791 0006 00 00 00 00 		.4byte	0x0
+ 792 0008 01          		.4byte	.Ldebug_ranges0+0x68
+ 793 0008 00 00 00 00 		.4byte	.Ldebug_line0
+ 794 000a 00 00 00 00 		.1byte	0x2
+ 795 000c 00 00 00 00 		.4byte	.LASF0
+ 796 000e 00 00 00 00 		.1byte	0x2
+ 797 0010 00 00 00 00 		.1byte	0x1e
+ 798 0012 00 00 00 00 		.4byte	0x34
+ 799 0014 02          		.1byte	0x3
+ 800 0015 00 00 00 00 		.1byte	0x2
+ 801 0017 02          		.1byte	0x8
+ 802 0017 1E          		.4byte	.LASF2
+ 803 0018 00 00 00 34 		.1byte	0x2
+ 804 001a 03          		.4byte	.LASF1
+ 805 001a 02          		.1byte	0x2
+ 806 001b 08          		.1byte	0x1f
+ 807 001b 00 00 00 00 		.4byte	0x46
+ 808 001d 02          		.1byte	0x3
+ 809 001e 00 00 00 00 		.1byte	0x2
+ 810 0020 02          		.1byte	0x7
+ 811 0020 1F          		.4byte	.LASF3
+ 812 0021 00 00 00 46 		.1byte	0x3
+ 813 0023 03          		.1byte	0x4
+ 814 0023 02          		.1byte	0x7
+ 815 0024 07          		.4byte	.LASF4
+ 816 0024 00 00 00 00 		.1byte	0x3
+ 817 0026 03          		.1byte	0x2
+ 818 0027 04          		.1byte	0x6
+ 819 0027 07          		.4byte	.LASF5
+ 820 0028 00 00 00 00 		.1byte	0x3
+ 821 002a 03          		.1byte	0x2
+ 822 002a 02          		.1byte	0x5
+ 823 002b 06          		.4byte	.LASF6
+ 824 002b 00 00 00 00 		.1byte	0x3
+ 825 002d 03          		.1byte	0x4
+ 826 002e 02          		.1byte	0x5
+ 827 002e 05          		.4byte	.LASF7
+ 828 002f 00 00 00 00 		.1byte	0x2
+ 829 0031 03          		.4byte	.LASF8
+ 830 0031 04          		.1byte	0x2
+ 831 0032 05          		.1byte	0x2a
+ 832 0032 00 00 00 00 		.4byte	0x74
+ 833 0034 02          		.1byte	0x3
+ 834 0035 00 00 00 00 		.1byte	0x2
+ 835 0037 02          		.1byte	0x7
+ 836 0037 2A          		.4byte	.LASF9
+ 837 0038 00 00 00 74 		.1byte	0x4
+ 838 003a 03          		.1byte	0x2
+ 839 003a 02          		.1byte	0x7
+ 840 003b 07          		.1byte	0x5
+ 841 003b 00 00 00 00 		.1byte	0x2
+ 842 003d 04          		.1byte	0x3
+ 843 003e 02          		.1byte	0x58
+ 844 003e 07          		.4byte	0x99
+ 845 003f 05          		.1byte	0x6
+ 846 003f 02          		.4byte	.LASF10
+ 847 0040 03          		.1byte	0x0
+ 848 0040 58          		.1byte	0x6
+ 849 0041 00 00 00 99 		.4byte	.LASF11
+ 850 0043 06          		.1byte	0x1
+ 851 0043 00 00 00 00 		.1byte	0x6
+ 852 0045 00          		.4byte	.LASF12
+ 853 0046 06          		.1byte	0x2
+ 854 0046 00 00 00 00 		.1byte	0x0
+ 855 0048 01          		.1byte	0x7
+ 856 0049 06          		.1byte	0x6
+ 857 0049 00 00 00 00 		.1byte	0x1
+ 858 004b 02          		.1byte	0x29
+ 859 004c 00          		.4byte	0xcc
+ 860 004c 07          		.1byte	0x8
+ 861 004d 06          		.4byte	.LASF13
+ 862 004d 01          		.1byte	0x1
+ 863 004e 29          		.1byte	0x2a
+ 864 004e 00 00 00 CC 		.4byte	0xcc
+ 865 0050 08          		.1byte	0x2
+ 866 0051 00 00 00 00 		.1byte	0x23
+ 867 0053 01          		.1byte	0x0
+ 868 0053 2A          		.1byte	0x8
+ 869 0054 00 00 00 CC 		.4byte	.LASF14
+ 870 0056 02          		.1byte	0x1
+ 871 0056 23          		.1byte	0x2b
+ 872 0057 00          		.4byte	0x3b
+ 873 0057 08          		.1byte	0x2
+ 874 0058 00 00 00 00 		.1byte	0x23
+ 875 005a 01          		.1byte	0x1
+ 876 005a 2B          		.1byte	0x8
+ 877 005b 00 00 00 3B 		.4byte	.LASF15
+ 878 005d 02          		.1byte	0x1
+ 879 005d 23          		.1byte	0x2c
+ 880 005e 01          		.4byte	0x3b
+ 881 005e 08          		.1byte	0x2
+ 882 005f 00 00 00 00 		.1byte	0x23
+ 883 0061 01          		.1byte	0x2
+ 884 0061 2C          		.1byte	0x0
+ 885 0062 00 00 00 3B 		.1byte	0x9
+ 886 0064 02          		.1byte	0x2
+ 887 0064 23          		.4byte	0x3b
+ 888 0065 02          		.1byte	0x2
+ 889 0065 00          		.4byte	.LASF16
+ 890 0066 09          		.1byte	0x1
+ 891 0066 02          		.1byte	0x2d
+ 892 0067 00 00 00 3B 		.4byte	0x99
+ 893 0069 02          		.1byte	0xa
+ 894 0069 00 00 00 00 		.4byte	.LASF45
+ 895 006b 01          		.1byte	0x1
+ 896 006c 2D          		.1byte	0x40
+ 897 006c 00 00 00 99 		.1byte	0x1
+ 898 006e 0A          		.4byte	0x69
+ 899 006f 00 00 00 00 		.4byte	.LFB3
+ 900 0071 01          		.4byte	.LFE3
+ 901 0071 40          		.4byte	.LLST0
+ 902 0072 01          		.4byte	0x16b
+ 903 0072 00 00 00 69 		.1byte	0xb
+ 904 0074 00 00 00 00 		.ascii "p\000"
+ 905 0076 00 00 00 00 		.1byte	0x1
+ 906 0078 00 00 00 00 		.1byte	0x3f
+ 907 007a 00 00 01 6B 		.4byte	0x16b
+ 908 007c 0B          		.4byte	.LLST1
+ 909 007d 70 00       		.1byte	0xc
+ 910 007e 01          		.4byte	.LASF13
+ 911 007e 3F          		.1byte	0x1
+ 912 007f 00 00 01 6B 		.1byte	0x3f
+ 913 0081 00 00 00 00 		.4byte	0xcc
+ 914 0083 0C          		.4byte	.LLST2
+ 915 0083 00 00 00 00 		.1byte	0xc
+ 916 0085 01          		.4byte	.LASF15
+ 917 0086 3F          		.1byte	0x1
+ 918 0086 00 00 00 CC 		.1byte	0x3f
+ 919 0088 00 00 00 00 		.4byte	0x3b
+ 920 008a 0C          		.4byte	.LLST3
+ 921 008b 00 00 00 00 		.1byte	0xd
+ 922 008d 01          		.4byte	.LASF17
+ 923 008d 3F          		.1byte	0x1
+ 924 008e 00 00 00 3B 		.1byte	0x41
+ 925 0090 00 00 00 00 		.4byte	0x3b
+ 926 0092 0D          		.1byte	0x1
+ 927 0092 00 00 00 00 		.1byte	0x57
+ 928 0094 01          		.1byte	0xe
+ 929 0095 41          		.ascii "i\000"
+ 930 0095 00 00 00 3B 		.1byte	0x1
+ 931 0097 01          		.1byte	0x42
+ 932 0098 57          		.4byte	0x3b
+ 933 0098 0E          		.1byte	0x1
+ 934 0099 69 00       		.1byte	0x59
+ 935 009a 01          		.1byte	0xf
+ 936 009a 42          		.4byte	.LBB2
+ 937 009b 00 00 00 3B 		.4byte	.LBE2
+ 938 009d 01          		.4byte	0x155
+ 939 009d 59          		.1byte	0x10
+ 940 009e 0F          		.4byte	.LASF18
+ 941 009e 00 00 00 00 		.1byte	0x1
+ 942 00a0 00 00 00 00 		.1byte	0x4a
+ 943 00a2 00 00 01 55 		.4byte	0x3b
+ 944 00a4 10          		.1byte	0x0
+ 945 00a5 00 00 00 00 		.1byte	0x11
+ 946 00a7 01          		.4byte	.LBB3
+ 947 00a7 4A          		.4byte	.LBE3
+ 948 00a8 00 00 00 3B 		.1byte	0x10
+ 949 00aa 00          		.4byte	.LASF18
+ 950 00aa 11          		.1byte	0x1
+ 951 00ab 00 00 00 00 		.1byte	0x50
+ 952 00ad 00 00 00 00 		.4byte	0x3b
+ 953 00af 10          		.1byte	0x0
+ 954 00af 00 00 00 00 		.1byte	0x0
+ 955 00b1 01          		.1byte	0x9
+ 956 00b2 50          		.1byte	0x2
+ 957 00b2 00 00 00 3B 		.4byte	0xd2
+ 958 00b4 00          		.1byte	0x12
+ 959 00b5 00          		.1byte	0x1
+ 960 00b5 09          		.4byte	.LASF46
+ 961 00b6 02          		.1byte	0x1
+ 962 00b6 00 00 00 D2 		.1byte	0xdf
+ 963 00b8 12          		.1byte	0x1
+ 964 00b9 01          		.4byte	.LFB10
+ 965 00b9 00 00 00 00 		.4byte	.LFE10
+ 966 00bb 01          		.1byte	0x1
+ 967 00bc DF          		.1byte	0x55
+ 968 00bc 01          		.1byte	0x13
+ 969 00bd 00 00 00 00 		.4byte	.LASF47
+ 970 00bf 00 00 00 00 		.1byte	0x1
+ 971 00c1 01          		.1byte	0x36
+ 972 00c1 55          		.1byte	0x1
+ 973 00c2 13          		.1byte	0x1
+ 974 00c2 00 00 00 00 		.4byte	0x1ba
+ 975 00c4 01          		.1byte	0x14
+ 976 00c5 36          		.ascii "p\000"
+ 977 00c5 01          		.1byte	0x1
+ 978 00c6 01          		.1byte	0x35
+ 979 00c6 00 00 01 BA 		.4byte	0x16b
+ 980 00c8 14          		.1byte	0x15
+ 981 00c9 70 00       		.4byte	.LASF13
+ 982 00ca 01          		.1byte	0x1
+ 983 00ca 35          		.1byte	0x35
+ 984 00cb 00 00 01 6B 		.4byte	0xcc
+ 985 00cd 15          		.1byte	0x15
+ 986 00cd 00 00 00 00 		.4byte	.LASF15
+ 987 00cf 01          		.1byte	0x1
+ 988 00d0 35          		.1byte	0x35
+ 989 00d0 00 00 00 CC 		.4byte	0x3b
+ 990 00d2 15          		.1byte	0x16
+ 991 00d3 00 00 00 00 		.ascii "i\000"
+ 992 00d5 01          		.1byte	0x1
+ 993 00d5 35          		.1byte	0x37
+ 994 00d6 00 00 00 3B 		.4byte	0x3b
+ 995 00d8 16          		.1byte	0x0
+ 996 00d8 69 00       		.1byte	0x17
+ 997 00d9 01          		.4byte	.LASF20
+ 998 00da 37          		.1byte	0x1
+ 999 00da 00 00 00 3B 		.1byte	0x5a
+ 1000 00dc 00          		.1byte	0x1
+ 1001 00dd 17          		.4byte	0x69
+ 1002 00dd 00 00 00 00 		.1byte	0x1
+ 1003 00df 01          		.4byte	0x1e0
+ 1004 00e0 5A          		.1byte	0x14
+ 1005 00e0 01          		.ascii "p\000"
+ 1006 00e1 00 00 00 69 		.1byte	0x1
+ 1007 00e3 01          		.1byte	0x59
+ 1008 00e3 00 00 01 E0 		.4byte	0x16b
+ 1009 00e5 14          		.1byte	0x10
+ 1010 00e6 70 00       		.4byte	.LASF19
+ 1011 00e7 01          		.1byte	0x1
+ 1012 00e7 59          		.1byte	0x5b
+ 1013 00e8 00 00 01 6B 		.4byte	0x1e0
+ 1014 00ea 10          		.1byte	0x0
+ 1015 00ea 00 00 00 00 		.1byte	0x18
+ 1016 00ec 01          		.4byte	0x3b
+ 1017 00ed 5B          		.4byte	0x1f0
+ 1018 00ed 00 00 01 E0 		.1byte	0x19
+ 1019 00ef 00          		.4byte	0x7b
+ 1020 00f0 18          		.1byte	0x3
+ 1021 00f0 00 00 00 3B 		.1byte	0x0
+ 1022 00f2 00 00 01 F0 		.1byte	0x17
+ 1023 00f4 19          		.4byte	.LASF21
+ 1024 00f5 00 00 00 7B 		.1byte	0x1
+ 1025 00f7 03          		.1byte	0x66
+ 1026 00f7 00          		.1byte	0x1
+ 1027 00f8 17          		.4byte	0x69
+ 1028 00f8 00 00 00 00 		.1byte	0x1
+ 1029 00fa 01          		.4byte	0x22c
+ 1030 00fb 66          		.1byte	0x14
+ 1031 00fb 01          		.ascii "p\000"
+ 1032 00fc 00 00 00 69 		.1byte	0x1
+ 1033 00fe 01          		.1byte	0x65
+ 1034 00fe 00 00 02 2C 		.4byte	0x16b
+ 1035 0100 14          		.1byte	0x15
+ 1036 0101 70 00       		.4byte	.LASF22
+ 1037 0102 01          		.1byte	0x1
+ 1038 0102 65          		.1byte	0x65
+ 1039 0103 00 00 01 6B 		.4byte	0x3b
+ 1040 0105 15          		.1byte	0x15
+ 1041 0105 00 00 00 00 		.4byte	.LASF23
+ 1042 0107 01          		.1byte	0x1
+ 1043 0108 65          		.1byte	0x65
+ 1044 0108 00 00 00 3B 		.4byte	0x3b
+ 1045 010a 15          		.1byte	0x10
+ 1046 010b 00 00 00 00 		.4byte	.LASF18
+ 1047 010d 01          		.1byte	0x1
+ 1048 010d 65          		.1byte	0x67
+ 1049 010e 00 00 00 3B 		.4byte	0x22c
+ 1050 0110 10          		.1byte	0x0
+ 1051 0110 00 00 00 00 		.1byte	0x18
+ 1052 0112 01          		.4byte	0x3b
+ 1053 0113 67          		.4byte	0x23c
+ 1054 0113 00 00 02 2C 		.1byte	0x19
+ 1055 0115 00          		.4byte	0x7b
+ 1056 0116 18          		.1byte	0x1
+ 1057 0116 00 00 00 3B 		.1byte	0x0
+ 1058 0118 00 00 02 3C 		.1byte	0x17
+ 1059 011a 19          		.4byte	.LASF24
+ 1060 011b 00 00 00 7B 		.1byte	0x1
+ 1061 011d 01          		.1byte	0x72
+ 1062 011d 00          		.1byte	0x1
+ 1063 011e 17          		.4byte	0x69
+ 1064 011e 00 00 00 00 		.1byte	0x1
+ 1065 0120 01          		.4byte	0x268
+ 1066 0121 72          		.1byte	0x14
+ 1067 0121 01          		.ascii "p\000"
+ 1068 0122 00 00 00 69 		.1byte	0x1
+ 1069 0124 01          		.1byte	0x71
+ 1070 0124 00 00 02 68 		.4byte	0x16b
+ 1071 0126 14          		.1byte	0xd
+ 1072 0127 70 00       		.4byte	.LASF25
+ 1073 0128 01          		.1byte	0x1
+ 1074 0128 71          		.1byte	0x73
+ 1075 0129 00 00 01 6B 		.4byte	0x22c
+ 1076 012b 0D          		.1byte	0x5
+ 1077 012b 00 00 00 00 		.1byte	0x3
+ 1078 012d 01          		.4byte	loop.982.
+ 1079 012e 73          		.1byte	0x0
+ 1080 012e 00 00 02 2C 		.1byte	0x17
+ 1081 0130 05          		.4byte	.LASF26
+ 1082 0131 03          		.1byte	0x1
+ 1083 0131 00 00 00 00 		.1byte	0x7c
+ 1084 0133 00          		.1byte	0x1
+ 1085 0134 17          		.4byte	0x69
+ 1086 0134 00 00 00 00 		.1byte	0x1
+ 1087 0136 01          		.4byte	0x299
+ 1088 0137 7C          		.1byte	0x14
+ 1089 0137 01          		.ascii "p\000"
+ 1090 0138 00 00 00 69 		.1byte	0x1
+ 1091 013a 01          		.1byte	0x7b
+ 1092 013a 00 00 02 99 		.4byte	0x16b
+ 1093 013c 14          		.1byte	0x15
+ 1094 013d 70 00       		.4byte	.LASF22
+ 1095 013e 01          		.1byte	0x1
+ 1096 013e 7B          		.1byte	0x7b
+ 1097 013f 00 00 01 6B 		.4byte	0x3b
+ 1098 0141 15          		.1byte	0x10
+ 1099 0141 00 00 00 00 		.4byte	.LASF18
+ 1100 0143 01          		.1byte	0x1
+ 1101 0144 7B          		.1byte	0x7d
+ 1102 0144 00 00 00 3B 		.4byte	0x22c
+ 1103 0146 10          		.1byte	0x0
+ 1104 0147 00 00 00 00 		.1byte	0x1a
+ 1105 0149 01          		.1byte	0x1
+ 1106 0149 7D          		.4byte	.LASF31
+ 1107 014a 00 00 02 2C 		.1byte	0x1
+ 1108 014c 00          		.1byte	0xb4
+ 1109 014c 1A          		.1byte	0x1
+ 1110 014d 01          		.4byte	0x69
+ 1111 014d 00 00 00 00 		.4byte	.LFB9
+ 1112 014f 01          		.4byte	.LFE9
+ 1113 0150 B4          		.4byte	.LLST5
+ 1114 0150 01          		.4byte	0x3fb
+ 1115 0151 00 00 00 69 		.1byte	0xc
+ 1116 0153 00 00 00 00 		.4byte	.LASF27
+ 1117 0155 00 00 00 00 		.1byte	0x1
+ 1118 0157 00 00 00 00 		.1byte	0xb3
+ 1119 0159 00 00 03 FB 		.4byte	0x29
+ 1120 015b 0C          		.4byte	.LLST6
+ 1121 015b 00 00 00 00 		.1byte	0xc
+ 1122 015d 01          		.4byte	.LASF28
+ 1123 015e B3          		.1byte	0x1
+ 1124 015e 00 00 00 29 		.1byte	0xb3
+ 1125 0160 00 00 00 00 		.4byte	0x29
+ 1126 0162 0C          		.4byte	.LLST7
+ 1127 0163 00 00 00 00 		.1byte	0xd
+ 1128 0165 01          		.4byte	.LASF13
+ 1129 0165 B3          		.1byte	0x1
+ 1130 0166 00 00 00 29 		.1byte	0xb5
+ 1131 0168 00 00 00 00 		.4byte	0x3fb
+ 1132 016a 0D          		.1byte	0x2
+ 1133 016a 00 00 00 00 		.1byte	0x76
+ 1134 016c 01          		.1byte	0x8
+ 1135 016d B5          		.1byte	0xe
+ 1136 016d 00 00 03 FB 		.ascii "cb\000"
+ 1137 016f 02          		.1byte	0x1
+ 1138 0170 76          		.1byte	0xb6
+ 1139 0170 08          		.4byte	0xd2
+ 1140 0171 0E          		.1byte	0x2
+ 1141 0171 63 62 00    		.1byte	0x76
+ 1142 0173 01          		.1byte	0x1
+ 1143 0173 B6          		.1byte	0xd
+ 1144 0174 00 00 00 D2 		.4byte	.LASF29
+ 1145 0176 02          		.1byte	0x1
+ 1146 0176 76          		.1byte	0xb7
+ 1147 0177 01          		.4byte	0x3b
+ 1148 0177 0D          		.1byte	0x2
+ 1149 0178 00 00 00 00 		.1byte	0x76
+ 1150 017a 01          		.1byte	0x24
+ 1151 017a B7          		.1byte	0x1b
+ 1152 017b 00 00 00 3B 		.4byte	.LASF30
+ 1153 017d 02          		.1byte	0x1
+ 1154 017d 76          		.1byte	0xb7
+ 1155 017e 24          		.4byte	0x3b
+ 1156 017e 1B          		.4byte	.LLST8
+ 1157 017f 00 00 00 00 		.1byte	0x1b
+ 1158 0181 01          		.4byte	.LASF22
+ 1159 0181 B7          		.1byte	0x1
+ 1160 0182 00 00 00 3B 		.1byte	0xb8
+ 1161 0184 00 00 00 00 		.4byte	0x3b
+ 1162 0186 1B          		.4byte	.LLST9
+ 1163 0186 00 00 00 00 		.1byte	0x1c
+ 1164 0188 01          		.4byte	0x184
+ 1165 0189 B8          		.4byte	.LBB15
+ 1166 0189 00 00 00 3B 		.4byte	.LBE15
+ 1167 018b 00 00 00 00 		.1byte	0x1
+ 1168 018d 1C          		.1byte	0xba
+ 1169 018e 00 00 01 84 		.4byte	0x34d
+ 1170 0190 00 00 00 00 		.1byte	0x1d
+ 1171 0192 00 00 00 00 		.4byte	0x1a5
+ 1172 0194 01          		.1byte	0x1d
+ 1173 0194 BA          		.4byte	0x19a
+ 1174 0195 00 00 03 4D 		.1byte	0x1d
+ 1175 0197 1D          		.4byte	0x191
+ 1176 0197 00 00 01 A5 		.1byte	0x11
+ 1177 0199 1D          		.4byte	.LBB16
+ 1178 019a 00 00 01 9A 		.4byte	.LBE16
+ 1179 019c 1D          		.1byte	0x1e
+ 1180 019c 00 00 01 91 		.4byte	0x1b0
+ 1181 019e 11          		.1byte	0x0
+ 1182 019f 00 00 00 00 		.1byte	0x0
+ 1183 01a1 00 00 00 00 		.1byte	0x1c
+ 1184 01a3 1E          		.4byte	0x1ba
+ 1185 01a3 00 00 01 B0 		.4byte	.LBB17
+ 1186 01a5 00          		.4byte	.LBE17
+ 1187 01a6 00          		.1byte	0x1
+ 1188 01a6 1C          		.1byte	0xbc
+ 1189 01a7 00 00 01 BA 		.4byte	0x378
+ 1190 01a9 00 00 00 00 		.1byte	0x1d
+ 1191 01ab 00 00 00 00 		.4byte	0x1cb
+ 1192 01ad 01          		.1byte	0x11
+ 1193 01ad BC          		.4byte	.LBB18
+ 1194 01ae 00 00 03 78 		.4byte	.LBE18
+ 1195 01b0 1D          		.1byte	0x1f
+ 1196 01b0 00 00 01 CB 		.4byte	0x1d4
+ 1197 01b2 11          		.1byte	0x2
+ 1198 01b3 00 00 00 00 		.1byte	0x76
+ 1199 01b5 00 00 00 00 		.1byte	0x4
+ 1200 01b7 1F          		.1byte	0x0
+ 1201 01b7 00 00 01 D4 		.1byte	0x0
+ 1202 01b9 02          		.1byte	0x20
+ 1203 01ba 76          		.4byte	.Ldebug_ranges0+0x0
+ 1204 01ba 04          		.4byte	0x3d2
+ 1205 01bb 00          		.1byte	0xe
+ 1206 01bb 00          		.ascii "gap\000"
+ 1207 01bc 20          		.1byte	0x1
+ 1208 01bc 00 00 00 00 		.1byte	0xc5
+ 1209 01be 00 00 03 D2 		.4byte	0x3b
+ 1210 01c0 0E          		.1byte	0x2
+ 1211 01c1 67 61 70 00 		.1byte	0x76
+ 1212 01c3 01          		.1byte	0x22
+ 1213 01c3 C5          		.1byte	0x21
+ 1214 01c4 00 00 00 3B 		.4byte	0x1f0
+ 1215 01c6 02          		.4byte	.Ldebug_ranges0+0x18
+ 1216 01c6 76          		.1byte	0x1
+ 1217 01c7 22          		.1byte	0xc6
+ 1218 01c7 21          		.4byte	0x3bc
+ 1219 01c8 00 00 01 F0 		.1byte	0x1d
+ 1220 01ca 00 00 00 00 		.4byte	0x215
+ 1221 01cc 01          		.1byte	0x1d
+ 1222 01cc C6          		.4byte	0x20a
+ 1223 01cd 00 00 03 BC 		.1byte	0x1d
+ 1224 01cf 1D          		.4byte	0x201
+ 1225 01cf 00 00 02 15 		.1byte	0x22
+ 1226 01d1 1D          		.4byte	.Ldebug_ranges0+0x30
+ 1227 01d2 00 00 02 0A 		.1byte	0x1f
+ 1228 01d4 1D          		.4byte	0x220
+ 1229 01d4 00 00 02 01 		.1byte	0x2
+ 1230 01d6 22          		.1byte	0x76
+ 1231 01d7 00 00 00 00 		.1byte	0x4
+ 1232 01d9 1F          		.1byte	0x0
+ 1233 01d9 00 00 02 20 		.1byte	0x0
+ 1234 01db 02          		.1byte	0x23
+ 1235 01dc 76          		.4byte	0x23c
+ 1236 01dc 04          		.4byte	.LBB24
+ 1237 01dd 00          		.4byte	.LBE24
+ 1238 01dd 00          		.1byte	0x1
+ 1239 01de 23          		.1byte	0xc8
+ 1240 01de 00 00 02 3C 		.1byte	0x1d
+ 1241 01e0 00 00 00 00 		.4byte	0x24d
+ 1242 01e2 00 00 00 00 		.1byte	0x0
+ 1243 01e4 01          		.1byte	0x0
+ 1244 01e5 C8          		.1byte	0x23
+ 1245 01e5 1D          		.4byte	0x268
+ 1246 01e6 00 00 02 4D 		.4byte	.LBB26
+ 1247 01e8 00          		.4byte	.LBE26
+ 1248 01e8 00          		.1byte	0x1
+ 1249 01e9 23          		.1byte	0xd6
+ 1250 01e9 00 00 02 68 		.1byte	0x1d
+ 1251 01eb 00 00 00 00 		.4byte	0x282
+ 1252 01ed 00 00 00 00 		.1byte	0x1d
+ 1253 01ef 01          		.4byte	0x279
+ 1254 01f0 D6          		.1byte	0x22
+ 1255 01f0 1D          		.4byte	.Ldebug_ranges0+0x48
+ 1256 01f1 00 00 02 82 		.1byte	0x1f
+ 1257 01f3 1D          		.4byte	0x28d
+ 1258 01f3 00 00 02 79 		.1byte	0x2
+ 1259 01f5 22          		.1byte	0x76
+ 1260 01f6 00 00 00 00 		.1byte	0x4
+ 1261 01f8 1F          		.1byte	0x0
+ 1262 01f8 00 00 02 8D 		.1byte	0x0
+ 1263 01fa 02          		.1byte	0x0
+ 1264 01fb 76          		.1byte	0x18
+ 1265 01fb 04          		.4byte	0x3b
+ 1266 01fc 00          		.4byte	0x40b
+ 1267 01fc 00          		.1byte	0x19
+ 1268 01fd 00          		.4byte	0x7b
+ 1269 01fd 18          		.1byte	0x17
+ 1270 01fe 00 00 00 3B 		.1byte	0x0
+ 1271 0200 00 00 04 0B 		.1byte	0x1a
+ 1272 0202 19          		.1byte	0x1
+ 1273 0202 00 00 00 7B 		.4byte	.LASF32
+ 1274 0204 17          		.1byte	0x1
+ 1275 0205 00          		.1byte	0x90
+ 1276 0205 1A          		.1byte	0x1
+ 1277 0206 01          		.4byte	0x69
+ 1278 0206 00 00 00 00 		.4byte	.LFB8
+ 1279 0208 01          		.4byte	.LFE8
+ 1280 0209 90          		.4byte	.LLST10
+ 1281 0209 01          		.4byte	0x463
+ 1282 020a 00 00 00 69 		.1byte	0xc
+ 1283 020c 00 00 00 00 		.4byte	.LASF33
+ 1284 020e 00 00 00 00 		.1byte	0x1
+ 1285 0210 00 00 00 00 		.1byte	0x8f
+ 1286 0212 00 00 04 63 		.4byte	0x29
+ 1287 0214 0C          		.4byte	.LLST11
+ 1288 0214 00 00 00 00 		.1byte	0xc
+ 1289 0216 01          		.4byte	.LASF34
+ 1290 0217 8F          		.1byte	0x1
+ 1291 0217 00 00 00 29 		.1byte	0x8f
+ 1292 0219 00 00 00 00 		.4byte	0x29
+ 1293 021b 0C          		.4byte	.LLST12
+ 1294 021c 00 00 00 00 		.1byte	0x24
+ 1295 021e 01          		.4byte	.LASF35
+ 1296 021e 8F          		.1byte	0x1
+ 1297 021f 00 00 00 29 		.1byte	0x8f
+ 1298 0221 00 00 00 00 		.4byte	0x29
+ 1299 0223 24          		.1byte	0x2
+ 1300 0223 00 00 00 00 		.1byte	0x91
+ 1301 0225 01          		.1byte	0x0
+ 1302 0226 8F          		.1byte	0x24
+ 1303 0226 00 00 00 29 		.4byte	.LASF36
+ 1304 0228 02          		.1byte	0x1
+ 1305 0229 91          		.1byte	0x8f
+ 1306 0229 00          		.4byte	0x69
+ 1307 022a 24          		.1byte	0x2
+ 1308 022a 00 00 00 00 		.1byte	0x91
+ 1309 022c 01          		.1byte	0x1
+ 1310 022d 8F          		.1byte	0x0
+ 1311 022d 00 00 00 69 		.1byte	0xd
+ 1312 022f 02          		.4byte	.LASF37
+ 1313 0230 91          		.1byte	0x1
+ 1314 0230 01          		.1byte	0x2f
+ 1315 0231 00          		.4byte	0x3b
+ 1316 0231 0D          		.1byte	0x5
+ 1317 0232 00 00 00 00 		.1byte	0x3
+ 1318 0234 01          		.4byte	pwm_pio_reg
+ 1319 0234 2F          		.1byte	0xd
+ 1320 0235 00 00 00 3B 		.4byte	.LASF38
+ 1321 0237 05          		.1byte	0x1
+ 1322 0237 03          		.1byte	0x30
+ 1323 0238 00 00 00 00 		.4byte	0x3b
+ 1324 023a 0D          		.1byte	0x5
+ 1325 023a 00 00 00 00 		.1byte	0x3
+ 1326 023c 01          		.4byte	pwm_pio_drive_reg
+ 1327 023d 30          		.1byte	0xd
+ 1328 023d 00 00 00 3B 		.4byte	.LASF39
+ 1329 023f 05          		.1byte	0x1
+ 1330 0240 03          		.1byte	0x31
+ 1331 0240 00 00 00 00 		.4byte	0x3b
+ 1332 0242 0D          		.1byte	0x5
+ 1333 0243 00 00 00 00 		.1byte	0x3
+ 1334 0245 01          		.4byte	pwm0_pio_mask
+ 1335 0245 31          		.1byte	0xd
+ 1336 0246 00 00 00 3B 		.4byte	.LASF40
+ 1337 0248 05          		.1byte	0x1
+ 1338 0248 03          		.1byte	0x32
+ 1339 0249 00 00 00 00 		.4byte	0x3b
+ 1340 024b 0D          		.1byte	0x5
+ 1341 024b 00 00 00 00 		.1byte	0x3
+ 1342 024d 01          		.4byte	pwm1_pio_mask
+ 1343 024e 32          		.1byte	0xd
+ 1344 024e 00 00 00 3B 		.4byte	.LASF41
+ 1345 0250 05          		.1byte	0x1
+ 1346 0251 03          		.1byte	0x33
+ 1347 0251 00 00 00 00 		.4byte	0x69
+ 1348 0253 0D          		.1byte	0x5
+ 1349 0254 00 00 00 00 		.1byte	0x3
+ 1350 0256 01          		.4byte	pwm_inverted
+ 1351 0256 33          		.1byte	0x0
+ 1352 0257 00 00 00 69 		.section	.debug_abbrev
+ 1353 0259 05          		.1byte	0x1
+ 1354 0259 03          		.1byte	0x11
+ 1355 025a 00 00 00 00 		.1byte	0x1
+ 1356 025c 00          		.1byte	0x25
+ 1357                 		.1byte	0xe
+ 1358 0000 01          		.1byte	0x13
+ 1359 0000 11          		.1byte	0xb
+ 1360 0001 01          		.1byte	0x3
+ 1361 0001 25          		.1byte	0xe
+ 1362 0002 0E          		.1byte	0x1b
+ 1363 0002 13          		.1byte	0xe
+ 1364 0003 0B          		.1byte	0x11
+ 1365 0003 03          		.1byte	0x1
+ 1366 0004 0E          		.1byte	0x52
+ 1367 0004 1B          		.1byte	0x1
+ 1368 0005 0E          		.1byte	0x55
+ 1369 0005 11          		.1byte	0x6
+ 1370 0006 01          		.1byte	0x10
+ 1371 0006 52          		.1byte	0x6
+ 1372 0007 01          		.1byte	0x0
+ 1373 0007 55          		.1byte	0x0
+ 1374 0008 06          		.1byte	0x2
+ 1375 0008 10          		.1byte	0x16
+ 1376 0009 06          		.1byte	0x0
+ 1377 0009 00          		.1byte	0x3
+ 1378 000a 00          		.1byte	0xe
+ 1379 000a 02          		.1byte	0x3a
+ 1380 000b 16          		.1byte	0xb
+ 1381 000b 00          		.1byte	0x3b
+ 1382 000c 03          		.1byte	0xb
+ 1383 000c 0E          		.1byte	0x49
+ 1384 000d 3A          		.1byte	0x13
+ 1385 000d 0B          		.1byte	0x0
+ 1386 000e 3B          		.1byte	0x0
+ 1387 000e 0B          		.1byte	0x3
+ 1388 000f 49          		.1byte	0x24
+ 1389 000f 13          		.1byte	0x0
+ 1390 0010 00          		.1byte	0xb
+ 1391 0010 00          		.1byte	0xb
+ 1392 0011 03          		.1byte	0x3e
+ 1393 0011 24          		.1byte	0xb
+ 1394 0012 00          		.1byte	0x3
+ 1395 0012 0B          		.1byte	0xe
+ 1396 0013 0B          		.1byte	0x0
+ 1397 0013 3E          		.1byte	0x0
+ 1398 0014 0B          		.1byte	0x4
+ 1399 0014 03          		.1byte	0x24
+ 1400 0015 0E          		.1byte	0x0
+ 1401 0015 00          		.1byte	0xb
+ 1402 0016 00          		.1byte	0xb
+ 1403 0016 04          		.1byte	0x3e
+ 1404 0017 24          		.1byte	0xb
+ 1405 0017 00          		.1byte	0x0
+ 1406 0018 0B          		.1byte	0x0
+ 1407 0018 0B          		.1byte	0x5
+ 1408 0019 3E          		.1byte	0x4
+ 1409 0019 0B          		.1byte	0x1
+ 1410 001a 00          		.1byte	0xb
+ 1411 001a 00          		.1byte	0xb
+ 1412 001b 05          		.1byte	0x3a
+ 1413 001b 04          		.1byte	0xb
+ 1414 001c 01          		.1byte	0x3b
+ 1415 001c 0B          		.1byte	0xb
+ 1416 001d 0B          		.1byte	0x1
+ 1417 001d 3A          		.1byte	0x13
+ 1418 001e 0B          		.1byte	0x0
+ 1419 001e 3B          		.1byte	0x0
+ 1420 001f 0B          		.1byte	0x6
+ 1421 001f 01          		.1byte	0x28
+ 1422 0020 13          		.1byte	0x0
+ 1423 0020 00          		.1byte	0x3
+ 1424 0021 00          		.1byte	0xe
+ 1425 0021 06          		.1byte	0x1c
+ 1426 0022 28          		.1byte	0xd
+ 1427 0022 00          		.1byte	0x0
+ 1428 0023 03          		.1byte	0x0
+ 1429 0023 0E          		.1byte	0x7
+ 1430 0024 1C          		.1byte	0x13
+ 1431 0024 0D          		.1byte	0x1
+ 1432 0025 00          		.1byte	0xb
+ 1433 0025 00          		.1byte	0xb
+ 1434 0026 07          		.1byte	0x3a
+ 1435 0026 13          		.1byte	0xb
+ 1436 0027 01          		.1byte	0x3b
+ 1437 0027 0B          		.1byte	0xb
+ 1438 0028 0B          		.1byte	0x1
+ 1439 0028 3A          		.1byte	0x13
+ 1440 0029 0B          		.1byte	0x0
+ 1441 0029 3B          		.1byte	0x0
+ 1442 002a 0B          		.1byte	0x8
+ 1443 002a 01          		.1byte	0xd
+ 1444 002b 13          		.1byte	0x0
+ 1445 002b 00          		.1byte	0x3
+ 1446 002c 00          		.1byte	0xe
+ 1447 002c 08          		.1byte	0x3a
+ 1448 002d 0D          		.1byte	0xb
+ 1449 002d 00          		.1byte	0x3b
+ 1450 002e 03          		.1byte	0xb
+ 1451 002e 0E          		.1byte	0x49
+ 1452 002f 3A          		.1byte	0x13
+ 1453 002f 0B          		.1byte	0x38
+ 1454 0030 3B          		.1byte	0xa
+ 1455 0030 0B          		.1byte	0x0
+ 1456 0031 49          		.1byte	0x0
+ 1457 0031 13          		.1byte	0x9
+ 1458 0032 38          		.1byte	0xf
+ 1459 0032 0A          		.1byte	0x0
+ 1460 0033 00          		.1byte	0xb
+ 1461 0033 00          		.1byte	0xb
+ 1462 0034 09          		.1byte	0x49
+ 1463 0034 0F          		.1byte	0x13
+ 1464 0035 00          		.1byte	0x0
+ 1465 0035 0B          		.1byte	0x0
+ 1466 0036 0B          		.1byte	0xa
+ 1467 0036 49          		.1byte	0x2e
+ 1468 0037 13          		.1byte	0x1
+ 1469 0037 00          		.1byte	0x3
+ 1470 0038 00          		.1byte	0xe
+ 1471 0038 0A          		.1byte	0x3a
+ 1472 0039 2E          		.1byte	0xb
+ 1473 0039 01          		.1byte	0x3b
+ 1474 003a 03          		.1byte	0xb
+ 1475 003a 0E          		.1byte	0x27
+ 1476 003b 3A          		.1byte	0xc
+ 1477 003b 0B          		.1byte	0x49
+ 1478 003c 3B          		.1byte	0x13
+ 1479 003c 0B          		.1byte	0x11
+ 1480 003d 27          		.1byte	0x1
+ 1481 003d 0C          		.1byte	0x12
+ 1482 003e 49          		.1byte	0x1
+ 1483 003e 13          		.1byte	0x40
+ 1484 003f 11          		.1byte	0x6
+ 1485 003f 01          		.1byte	0x1
+ 1486 0040 12          		.1byte	0x13
+ 1487 0040 01          		.1byte	0x0
+ 1488 0041 40          		.1byte	0x0
+ 1489 0041 06          		.1byte	0xb
+ 1490 0042 01          		.1byte	0x5
+ 1491 0042 13          		.1byte	0x0
+ 1492 0043 00          		.1byte	0x3
+ 1493 0043 00          		.1byte	0x8
+ 1494 0044 0B          		.1byte	0x3a
+ 1495 0044 05          		.1byte	0xb
+ 1496 0045 00          		.1byte	0x3b
+ 1497 0045 03          		.1byte	0xb
+ 1498 0046 08          		.1byte	0x49
+ 1499 0046 3A          		.1byte	0x13
+ 1500 0047 0B          		.1byte	0x2
+ 1501 0047 3B          		.1byte	0x6
+ 1502 0048 0B          		.1byte	0x0
+ 1503 0048 49          		.1byte	0x0
+ 1504 0049 13          		.1byte	0xc
+ 1505 0049 02          		.1byte	0x5
+ 1506 004a 06          		.1byte	0x0
+ 1507 004a 00          		.1byte	0x3
+ 1508 004b 00          		.1byte	0xe
+ 1509 004b 0C          		.1byte	0x3a
+ 1510 004c 05          		.1byte	0xb
+ 1511 004c 00          		.1byte	0x3b
+ 1512 004d 03          		.1byte	0xb
+ 1513 004d 0E          		.1byte	0x49
+ 1514 004e 3A          		.1byte	0x13
+ 1515 004e 0B          		.1byte	0x2
+ 1516 004f 3B          		.1byte	0x6
+ 1517 004f 0B          		.1byte	0x0
+ 1518 0050 49          		.1byte	0x0
+ 1519 0050 13          		.1byte	0xd
+ 1520 0051 02          		.1byte	0x34
+ 1521 0051 06          		.1byte	0x0
+ 1522 0052 00          		.1byte	0x3
+ 1523 0052 00          		.1byte	0xe
+ 1524 0053 0D          		.1byte	0x3a
+ 1525 0053 34          		.1byte	0xb
+ 1526 0054 00          		.1byte	0x3b
+ 1527 0054 03          		.1byte	0xb
+ 1528 0055 0E          		.1byte	0x49
+ 1529 0055 3A          		.1byte	0x13
+ 1530 0056 0B          		.1byte	0x2
+ 1531 0056 3B          		.1byte	0xa
+ 1532 0057 0B          		.1byte	0x0
+ 1533 0057 49          		.1byte	0x0
+ 1534 0058 13          		.1byte	0xe
+ 1535 0058 02          		.1byte	0x34
+ 1536 0059 0A          		.1byte	0x0
+ 1537 0059 00          		.1byte	0x3
+ 1538 005a 00          		.1byte	0x8
+ 1539 005a 0E          		.1byte	0x3a
+ 1540 005b 34          		.1byte	0xb
+ 1541 005b 00          		.1byte	0x3b
+ 1542 005c 03          		.1byte	0xb
+ 1543 005c 08          		.1byte	0x49
+ 1544 005d 3A          		.1byte	0x13
+ 1545 005d 0B          		.1byte	0x2
+ 1546 005e 3B          		.1byte	0xa
+ 1547 005e 0B          		.1byte	0x0
+ 1548 005f 49          		.1byte	0x0
+ 1549 005f 13          		.1byte	0xf
+ 1550 0060 02          		.1byte	0xb
+ 1551 0060 0A          		.1byte	0x1
+ 1552 0061 00          		.1byte	0x11
+ 1553 0061 00          		.1byte	0x1
+ 1554 0062 0F          		.1byte	0x12
+ 1555 0062 0B          		.1byte	0x1
+ 1556 0063 01          		.1byte	0x1
+ 1557 0063 11          		.1byte	0x13
+ 1558 0064 01          		.1byte	0x0
+ 1559 0064 12          		.1byte	0x0
+ 1560 0065 01          		.1byte	0x10
+ 1561 0065 01          		.1byte	0x34
+ 1562 0066 13          		.1byte	0x0
+ 1563 0066 00          		.1byte	0x3
+ 1564 0067 00          		.1byte	0xe
+ 1565 0067 10          		.1byte	0x3a
+ 1566 0068 34          		.1byte	0xb
+ 1567 0068 00          		.1byte	0x3b
+ 1568 0069 03          		.1byte	0xb
+ 1569 0069 0E          		.1byte	0x49
+ 1570 006a 3A          		.1byte	0x13
+ 1571 006a 0B          		.1byte	0x0
+ 1572 006b 3B          		.1byte	0x0
+ 1573 006b 0B          		.1byte	0x11
+ 1574 006c 49          		.1byte	0xb
+ 1575 006c 13          		.1byte	0x1
+ 1576 006d 00          		.1byte	0x11
+ 1577 006d 00          		.1byte	0x1
+ 1578 006e 11          		.1byte	0x12
+ 1579 006e 0B          		.1byte	0x1
+ 1580 006f 01          		.1byte	0x0
+ 1581 006f 11          		.1byte	0x0
+ 1582 0070 01          		.1byte	0x12
+ 1583 0070 12          		.1byte	0x2e
+ 1584 0071 01          		.1byte	0x0
+ 1585 0071 00          		.1byte	0x3f
+ 1586 0072 00          		.1byte	0xc
+ 1587 0072 12          		.1byte	0x3
+ 1588 0073 2E          		.1byte	0xe
+ 1589 0073 00          		.1byte	0x3a
+ 1590 0074 3F          		.1byte	0xb
+ 1591 0074 0C          		.1byte	0x3b
+ 1592 0075 03          		.1byte	0xb
+ 1593 0075 0E          		.1byte	0x27
+ 1594 0076 3A          		.1byte	0xc
+ 1595 0076 0B          		.1byte	0x11
+ 1596 0077 3B          		.1byte	0x1
+ 1597 0077 0B          		.1byte	0x12
+ 1598 0078 27          		.1byte	0x1
+ 1599 0078 0C          		.1byte	0x40
+ 1600 0079 11          		.1byte	0xa
+ 1601 0079 01          		.1byte	0x0
+ 1602 007a 12          		.1byte	0x0
+ 1603 007a 01          		.1byte	0x13
+ 1604 007b 40          		.1byte	0x2e
+ 1605 007b 0A          		.1byte	0x1
+ 1606 007c 00          		.1byte	0x3
+ 1607 007c 00          		.1byte	0xe
+ 1608 007d 13          		.1byte	0x3a
+ 1609 007d 2E          		.1byte	0xb
+ 1610 007e 01          		.1byte	0x3b
+ 1611 007e 03          		.1byte	0xb
+ 1612 007f 0E          		.1byte	0x27
+ 1613 007f 3A          		.1byte	0xc
+ 1614 0080 0B          		.1byte	0x20
+ 1615 0080 3B          		.1byte	0xb
+ 1616 0081 0B          		.1byte	0x1
+ 1617 0081 27          		.1byte	0x13
+ 1618 0082 0C          		.1byte	0x0
+ 1619 0082 20          		.1byte	0x0
+ 1620 0083 0B          		.1byte	0x14
+ 1621 0083 01          		.1byte	0x5
+ 1622 0084 13          		.1byte	0x0
+ 1623 0084 00          		.1byte	0x3
+ 1624 0085 00          		.1byte	0x8
+ 1625 0085 14          		.1byte	0x3a
+ 1626 0086 05          		.1byte	0xb
+ 1627 0086 00          		.1byte	0x3b
+ 1628 0087 03          		.1byte	0xb
+ 1629 0087 08          		.1byte	0x49
+ 1630 0088 3A          		.1byte	0x13
+ 1631 0088 0B          		.1byte	0x0
+ 1632 0089 3B          		.1byte	0x0
+ 1633 0089 0B          		.1byte	0x15
+ 1634 008a 49          		.1byte	0x5
+ 1635 008a 13          		.1byte	0x0
+ 1636 008b 00          		.1byte	0x3
+ 1637 008b 00          		.1byte	0xe
+ 1638 008c 15          		.1byte	0x3a
+ 1639 008c 05          		.1byte	0xb
+ 1640 008d 00          		.1byte	0x3b
+ 1641 008d 03          		.1byte	0xb
+ 1642 008e 0E          		.1byte	0x49
+ 1643 008e 3A          		.1byte	0x13
+ 1644 008f 0B          		.1byte	0x0
+ 1645 008f 3B          		.1byte	0x0
+ 1646 0090 0B          		.1byte	0x16
+ 1647 0090 49          		.1byte	0x34
+ 1648 0091 13          		.1byte	0x0
+ 1649 0091 00          		.1byte	0x3
+ 1650 0092 00          		.1byte	0x8
+ 1651 0092 16          		.1byte	0x3a
+ 1652 0093 34          		.1byte	0xb
+ 1653 0093 00          		.1byte	0x3b
+ 1654 0094 03          		.1byte	0xb
+ 1655 0094 08          		.1byte	0x49
+ 1656 0095 3A          		.1byte	0x13
+ 1657 0095 0B          		.1byte	0x0
+ 1658 0096 3B          		.1byte	0x0
+ 1659 0096 0B          		.1byte	0x17
+ 1660 0097 49          		.1byte	0x2e
+ 1661 0097 13          		.1byte	0x1
+ 1662 0098 00          		.1byte	0x3
+ 1663 0098 00          		.1byte	0xe
+ 1664 0099 17          		.1byte	0x3a
+ 1665 0099 2E          		.1byte	0xb
+ 1666 009a 01          		.1byte	0x3b
+ 1667 009a 03          		.1byte	0xb
+ 1668 009b 0E          		.1byte	0x27
+ 1669 009b 3A          		.1byte	0xc
+ 1670 009c 0B          		.1byte	0x49
+ 1671 009c 3B          		.1byte	0x13
+ 1672 009d 0B          		.1byte	0x20
+ 1673 009d 27          		.1byte	0xb
+ 1674 009e 0C          		.1byte	0x1
+ 1675 009e 49          		.1byte	0x13
+ 1676 009f 13          		.1byte	0x0
+ 1677 009f 20          		.1byte	0x0
+ 1678 00a0 0B          		.1byte	0x18
+ 1679 00a0 01          		.1byte	0x1
+ 1680 00a1 13          		.1byte	0x1
+ 1681 00a1 00          		.1byte	0x49
+ 1682 00a2 00          		.1byte	0x13
+ 1683 00a2 18          		.1byte	0x1
+ 1684 00a3 01          		.1byte	0x13
+ 1685 00a3 01          		.1byte	0x0
+ 1686 00a4 49          		.1byte	0x0
+ 1687 00a4 13          		.1byte	0x19
+ 1688 00a5 01          		.1byte	0x21
+ 1689 00a5 13          		.1byte	0x0
+ 1690 00a6 00          		.1byte	0x49
+ 1691 00a6 00          		.1byte	0x13
+ 1692 00a7 19          		.1byte	0x2f
+ 1693 00a7 21          		.1byte	0xb
+ 1694 00a8 00          		.1byte	0x0
+ 1695 00a8 49          		.1byte	0x0
+ 1696 00a9 13          		.1byte	0x1a
+ 1697 00a9 2F          		.1byte	0x2e
+ 1698 00aa 0B          		.1byte	0x1
+ 1699 00aa 00          		.1byte	0x3f
+ 1700 00ab 00          		.1byte	0xc
+ 1701 00ab 1A          		.1byte	0x3
+ 1702 00ac 2E          		.1byte	0xe
+ 1703 00ac 01          		.1byte	0x3a
+ 1704 00ad 3F          		.1byte	0xb
+ 1705 00ad 0C          		.1byte	0x3b
+ 1706 00ae 03          		.1byte	0xb
+ 1707 00ae 0E          		.1byte	0x27
+ 1708 00af 3A          		.1byte	0xc
+ 1709 00af 0B          		.1byte	0x49
+ 1710 00b0 3B          		.1byte	0x13
+ 1711 00b0 0B          		.1byte	0x11
+ 1712 00b1 27          		.1byte	0x1
+ 1713 00b1 0C          		.1byte	0x12
+ 1714 00b2 49          		.1byte	0x1
+ 1715 00b2 13          		.1byte	0x40
+ 1716 00b3 11          		.1byte	0x6
+ 1717 00b3 01          		.1byte	0x1
+ 1718 00b4 12          		.1byte	0x13
+ 1719 00b4 01          		.1byte	0x0
+ 1720 00b5 40          		.1byte	0x0
+ 1721 00b5 06          		.1byte	0x1b
+ 1722 00b6 01          		.1byte	0x34
+ 1723 00b6 13          		.1byte	0x0
+ 1724 00b7 00          		.1byte	0x3
+ 1725 00b7 00          		.1byte	0xe
+ 1726 00b8 1B          		.1byte	0x3a
+ 1727 00b8 34          		.1byte	0xb
+ 1728 00b9 00          		.1byte	0x3b
+ 1729 00b9 03          		.1byte	0xb
+ 1730 00ba 0E          		.1byte	0x49
+ 1731 00ba 3A          		.1byte	0x13
+ 1732 00bb 0B          		.1byte	0x2
+ 1733 00bb 3B          		.1byte	0x6
+ 1734 00bc 0B          		.1byte	0x0
+ 1735 00bc 49          		.1byte	0x0
+ 1736 00bd 13          		.1byte	0x1c
+ 1737 00bd 02          		.1byte	0x1d
+ 1738 00be 06          		.1byte	0x1
+ 1739 00be 00          		.1byte	0x31
+ 1740 00bf 00          		.1byte	0x13
+ 1741 00bf 1C          		.1byte	0x11
+ 1742 00c0 1D          		.1byte	0x1
+ 1743 00c0 01          		.1byte	0x12
+ 1744 00c1 31          		.1byte	0x1
+ 1745 00c1 13          		.1byte	0x58
+ 1746 00c2 11          		.1byte	0xb
+ 1747 00c2 01          		.1byte	0x59
+ 1748 00c3 12          		.1byte	0xb
+ 1749 00c3 01          		.1byte	0x1
+ 1750 00c4 58          		.1byte	0x13
+ 1751 00c4 0B          		.1byte	0x0
+ 1752 00c5 59          		.1byte	0x0
+ 1753 00c5 0B          		.1byte	0x1d
+ 1754 00c6 01          		.1byte	0x5
+ 1755 00c6 13          		.1byte	0x0
+ 1756 00c7 00          		.1byte	0x31
+ 1757 00c7 00          		.1byte	0x13
+ 1758 00c8 1D          		.1byte	0x0
+ 1759 00c8 05          		.1byte	0x0
+ 1760 00c9 00          		.1byte	0x1e
+ 1761 00c9 31          		.1byte	0x34
+ 1762 00ca 13          		.1byte	0x0
+ 1763 00ca 00          		.1byte	0x31
+ 1764 00cb 00          		.1byte	0x13
+ 1765 00cb 1E          		.1byte	0x0
+ 1766 00cc 34          		.1byte	0x0
+ 1767 00cc 00          		.1byte	0x1f
+ 1768 00cd 31          		.1byte	0x34
+ 1769 00cd 13          		.1byte	0x0
+ 1770 00ce 00          		.1byte	0x31
+ 1771 00ce 00          		.1byte	0x13
+ 1772 00cf 1F          		.1byte	0x2
+ 1773 00cf 34          		.1byte	0xa
+ 1774 00d0 00          		.1byte	0x0
+ 1775 00d0 31          		.1byte	0x0
+ 1776 00d1 13          		.1byte	0x20
+ 1777 00d1 02          		.1byte	0xb
+ 1778 00d2 0A          		.1byte	0x1
+ 1779 00d2 00          		.1byte	0x55
+ 1780 00d3 00          		.1byte	0x6
+ 1781 00d3 20          		.1byte	0x1
+ 1782 00d4 0B          		.1byte	0x13
+ 1783 00d4 01          		.1byte	0x0
+ 1784 00d5 55          		.1byte	0x0
+ 1785 00d5 06          		.1byte	0x21
+ 1786 00d6 01          		.1byte	0x1d
+ 1787 00d6 13          		.1byte	0x1
+ 1788 00d7 00          		.1byte	0x31
+ 1789 00d7 00          		.1byte	0x13
+ 1790 00d8 21          		.1byte	0x55
+ 1791 00d8 1D          		.1byte	0x6
+ 1792 00d9 01          		.1byte	0x58
+ 1793 00d9 31          		.1byte	0xb
+ 1794 00da 13          		.1byte	0x59
+ 1795 00da 55          		.1byte	0xb
+ 1796 00db 06          		.1byte	0x1
+ 1797 00db 58          		.1byte	0x13
+ 1798 00dc 0B          		.1byte	0x0
+ 1799 00dc 59          		.1byte	0x0
+ 1800 00dd 0B          		.1byte	0x22
+ 1801 00dd 01          		.1byte	0xb
+ 1802 00de 13          		.1byte	0x1
+ 1803 00de 00          		.1byte	0x55
+ 1804 00df 00          		.1byte	0x6
+ 1805 00df 22          		.1byte	0x0
+ 1806 00e0 0B          		.1byte	0x0
+ 1807 00e0 01          		.1byte	0x23
+ 1808 00e1 55          		.1byte	0x1d
+ 1809 00e1 06          		.1byte	0x1
+ 1810 00e2 00          		.1byte	0x31
+ 1811 00e2 00          		.1byte	0x13
+ 1812 00e3 23          		.1byte	0x11
+ 1813 00e3 1D          		.1byte	0x1
+ 1814 00e4 01          		.1byte	0x12
+ 1815 00e4 31          		.1byte	0x1
+ 1816 00e5 13          		.1byte	0x58
+ 1817 00e5 11          		.1byte	0xb
+ 1818 00e6 01          		.1byte	0x59
+ 1819 00e6 12          		.1byte	0xb
+ 1820 00e7 01          		.1byte	0x0
+ 1821 00e7 58          		.1byte	0x0
+ 1822 00e8 0B          		.1byte	0x24
+ 1823 00e8 59          		.1byte	0x5
+ 1824 00e9 0B          		.1byte	0x0
+ 1825 00e9 00          		.1byte	0x3
+ 1826 00ea 00          		.1byte	0xe
+ 1827 00ea 24          		.1byte	0x3a
+ 1828 00eb 05          		.1byte	0xb
+ 1829 00eb 00          		.1byte	0x3b
+ 1830 00ec 03          		.1byte	0xb
+ 1831 00ec 0E          		.1byte	0x49
+ 1832 00ed 3A          		.1byte	0x13
+ 1833 00ed 0B          		.1byte	0x2
+ 1834 00ee 3B          		.1byte	0xa
+ 1835 00ee 0B          		.1byte	0x0
+ 1836 00ef 49          		.1byte	0x0
+ 1837 00ef 13          		.1byte	0x0
+ 1838 00f0 02          		.section	.debug_pubnames,"",@progbits
+ 1839 00f0 0A          		.4byte	0x3b
+ 1840 00f1 00          		.2byte	0x2
+ 1841 00f1 00          		.4byte	.Ldebug_info0
+ 1842 00f2 00          		.4byte	0x4b9
+ 1843                 		.4byte	0x171
+ 1844 0000 00 00 00 3B 		.ascii "VFPWMStop\000"
+ 1845 0002 00 02       		.4byte	0x299
+ 1846 0003 00 00 00 00 		.ascii "VFPWMStart\000"
+ 1847 0005 00 00 04 B9 		.4byte	0x40b
+ 1848 0007 00 00 01 71 		.ascii "VFPWMConfig\000"
+ 1849 0009 56 46 50 57 		.4byte	0x0
+ 1849      4D 53 74 6F 
+ 1849      70 00 
+ 1850 000e 00 00 02 99 		.section	.debug_aranges,"",@progbits
+ 1851 0010 56 46 50 57 		.4byte	0x34
+ 1851      4D 53 74 61 
+ 1851      72 74 00 
+ 1852 0015 00 00 04 0B 		.2byte	0x2
+ 1853 0017 56 46 50 57 		.4byte	.Ldebug_info0
+ 1853      4D 43 6F 6E 
+ 1853      66 69 67 00 
+ 1854 001d 00 00 00 00 		.1byte	0x4
+ 1855                 		.1byte	0x0
+ 1856 0000 00 00 00 34 		.2byte	0x0
+ 1857 0002 00 02       		.2byte	0x0
+ 1858 0003 00 00 00 00 		.4byte	.LFB3
+ 1859 0005 04          		.4byte	.LFE3-.LFB3
+ 1860 0005 00          		.4byte	.LFB10
+ 1861 0006 00 00       		.4byte	.LFE10-.LFB10
+ 1862 0007 00 00       		.4byte	.LFB9
+ 1863 0008 00 00 00 00 		.4byte	.LFE9-.LFB9
+ 1864 000a 00 00 00 00 		.4byte	.LFB8
+ 1865 000c 00 00 00 00 		.4byte	.LFE8-.LFB8
+ 1866 000e 00 00 00 00 		.4byte	0x0
+ 1867 0010 00 00 00 00 		.4byte	0x0
+ 1868 0012 00 00 00 00 		.section	.debug_ranges,"",@progbits
+ 1869 0014 00 00 00 00 	.Ldebug_ranges0:
+ 1870 0016 00 00 00 00 		.4byte	.LBB19
+ 1871 0018 00 00 00 00 		.4byte	.LBE19
+ 1872 001a 00 00 00 00 		.4byte	.LBB25
+ 1873                 		.4byte	.LBE25
+ 1874                 		.4byte	0x0
+ 1875 0000 00 00 00 00 		.4byte	0x0
+ 1876 0002 00 00 00 00 		.4byte	.LBB20
+ 1877 0004 00 00 00 00 		.4byte	.LBE20
+ 1878 0006 00 00 00 00 		.4byte	.LBB23
+ 1879 0008 00 00 00 00 		.4byte	.LBE23
+ 1880 000a 00 00 00 00 		.4byte	0x0
+ 1881 000c 00 00 00 00 		.4byte	0x0
+ 1882 000e 00 00 00 00 		.4byte	.LBB21
+ 1883 0010 00 00 00 00 		.4byte	.LBE21
+ 1884 0012 00 00 00 00 		.4byte	.LBB22
+ 1885 0014 00 00 00 00 		.4byte	.LBE22
+ 1886 0016 00 00 00 00 		.4byte	0x0
+ 1887 0018 00 00 00 00 		.4byte	0x0
+ 1888 001a 00 00 00 00 		.4byte	.LBB27
+ 1889 001c 00 00 00 00 		.4byte	.LBE27
+ 1890 001e 00 00 00 00 		.4byte	.LBB29
+ 1891 0020 00 00 00 00 		.4byte	.LBE29
+ 1892 0022 00 00 00 00 		.4byte	.LBB28
+ 1893 0024 00 00 00 00 		.4byte	.LBE28
+ 1894 0026 00 00 00 00 		.4byte	0x0
+ 1895 0028 00 00 00 00 		.4byte	0x0
+ 1896 002a 00 00 00 00 		.4byte	.Ltext0
+ 1897 002c 00 00 00 00 		.4byte	.Letext0
+ 1898 002e 00 00 00 00 		.4byte	.LFB3
+ 1899 0030 00 00 00 00 		.4byte	.LFE3
+ 1900 0032 00 00 00 00 		.4byte	.LFB10
+ 1901 0034 00 00 00 00 		.4byte	.LFE10
+ 1902 0036 00 00 00 00 		.4byte	.LFB9
+ 1903 0038 00 00 00 00 		.4byte	.LFE9
+ 1904 003a 00 00 00 00 		.4byte	.LFB8
+ 1905 003c 00 00 00 00 		.4byte	.LFE8
+ 1906 003e 00 00 00 00 		.4byte	0x0
+ 1907 0040 00 00 00 00 		.4byte	0x0
+ 1908 0042 00 00 00 00 		.section	.debug_str,"MS",@progbits,1
+ 1909 0044 00 00 00 00 	.LASF19:
+ 1910 0046 00 00 00 00 		.ascii "header\000"
+ 1911 0048 00 00 00 00 	.LASF22:
+ 1912 004a 00 00 00 00 		.ascii "pattern\000"
+ 1913                 	.LASF29:
+ 1914                 		.ascii "counter\000"
+ 1915 0000 68 65 61 64 	.LASF18:
+ 1915      65 72 00 
+ 1916                 		.ascii "temp\000"
+ 1917 0003 70 61 74 74 	.LASF6:
+ 1917      65 72 6E 00 
+ 1918                 		.ascii "short int\000"
+ 1919 0007 63 6F 75 6E 	.LASF32:
+ 1919      74 65 72 00 
+ 1920                 		.ascii "VFPWMConfig\000"
+ 1921 000b 74 65 6D 70 	.LASF30:
+ 1921      00 
+ 1922                 		.ascii "previous_counter\000"
+ 1923 000e 73 68 6F 72 	.LASF11:
+ 1923      74 20 69 6E 
+ 1923      74 00 
+ 1924                 		.ascii "sleep_mode_deep\000"
+ 1925 0013 56 46 50 57 	.LASF1:
+ 1925      4D 43 6F 6E 
+ 1925      66 69 67 00 
+ 1926                 		.ascii "uint16\000"
+ 1927 0019 70 72 65 76 	.LASF14:
+ 1927      69 6F 75 73 
+ 1927      5F 63 6F 75 
+ 1927      6E 74 65 72 
+ 1927      00 
+ 1928                 		.ascii "index\000"
+ 1929 0021 73 6C 65 65 	.LASF46:
+ 1929      70 5F 6D 6F 
+ 1929      64 65 5F 64 
+ 1929      65 65 70 00 
+ 1930                 		.ascii "VFPWMStop\000"
+ 1931 0029 75 69 6E 74 	.LASF0:
+ 1931      31 36 00 
+ 1932                 		.ascii "uint8\000"
+ 1933 002d 69 6E 64 65 	.LASF27:
+ 1933      78 00 
+ 1934                 		.ascii "width0\000"
+ 1935 0030 56 46 50 57 	.LASF28:
+ 1935      4D 53 74 6F 
+ 1935      70 00 
+ 1936                 		.ascii "width1\000"
+ 1937 0035 75 69 6E 74 	.LASF8:
+ 1937      38 00 
+ 1938                 		.ascii "bool\000"
+ 1939 0038 77 69 64 74 	.LASF31:
+ 1939      68 30 00 
+ 1940                 		.ascii "VFPWMStart\000"
+ 1941 003b 77 69 64 74 	.LASF33:
+ 1941      68 31 00 
+ 1942                 		.ascii "pio_bank\000"
+ 1943 003f 62 6F 6F 6C 	.LASF45:
+ 1943      00 
+ 1944                 		.ascii "write_buffer\000"
+ 1945 0041 56 46 50 57 	.LASF35:
+ 1945      4D 53 74 61 
+ 1945      72 74 00 
+ 1946                 		.ascii "pio_bit1\000"
+ 1947 0047 70 69 6F 5F 	.LASF26:
+ 1947      62 61 6E 6B 
+ 1947      00 
+ 1948                 		.ascii "write_end\000"
+ 1949 004b 77 72 69 74 	.LASF7:
+ 1949      65 5F 62 75 
+ 1949      66 66 65 72 
+ 1949      00 
+ 1950                 		.ascii "long int\000"
+ 1951 0052 70 69 6F 5F 	.LASF39:
+ 1951      62 69 74 31 
+ 1951      00 
+ 1952                 		.ascii "pwm0_pio_mask\000"
+ 1953 0056 77 72 69 74 	.LASF15:
+ 1953      65 5F 65 6E 
+ 1953      64 00 
+ 1954                 		.ascii "length\000"
+ 1955 005b 6C 6F 6E 67 	.LASF24:
+ 1955      20 69 6E 74 
+ 1955      00 
+ 1956                 		.ascii "write_loop\000"
+ 1957 0060 70 77 6D 30 	.LASF2:
+ 1957      5F 70 69 6F 
+ 1957      5F 6D 61 73 
+ 1957      6B 00 
+ 1958                 		.ascii "unsigned char\000"
+ 1959 0067 6C 65 6E 67 	.LASF21:
+ 1959      74 68 00 
+ 1960                 		.ascii "write_output\000"
+ 1961 006a 77 72 69 74 	.LASF44:
+ 1961      65 5F 6C 6F 
+ 1961      6F 70 00 
+ 1962                 		.ascii "C:\\Users\\Remidio\\Desktop\\SCR edited new\\231118\000"
+ 1963 0070 75 6E 73 69 	.LASF38:
+ 1963      67 6E 65 64 
+ 1963      20 63 68 61 
+ 1963      72 00 
+ 1964                 		.ascii "pwm_pio_drive_reg\000"
+ 1965 0077 77 72 69 74 	.LASF5:
+ 1965      65 5F 6F 75 
+ 1965      74 70 75 74 
+ 1965      00 
+ 1966                 		.ascii "signed char\000"
+ 1967 007d 43 3A 5C 55 	.LASF16:
+ 1967      73 65 72 73 
+ 1967      5C 52 65 6D 
+ 1967      69 64 69 6F 
+ 1967      5C 44 65 73 
+ 1968                 		.ascii "pio_ctrlr_code_buffer\000"
+ 1969 0095 70 77 6D 5F 	.LASF9:
+ 1969      70 69 6F 5F 
+ 1969      64 72 69 76 
+ 1969      65 5F 72 65 
+ 1969      67 00 
+ 1970                 		.ascii "unsigned int\000"
+ 1971 009e 73 69 67 6E 	.LASF34:
+ 1971      65 64 20 63 
+ 1971      68 61 72 00 
+ 1972                 		.ascii "pio_bit0\000"
+ 1973 00a4 70 69 6F 5F 	.LASF43:
+ 1973      63 74 72 6C 
+ 1973      72 5F 63 6F 
+ 1973      64 65 5F 62 
+ 1973      75 66 66 65 
+ 1974                 		.ascii "vf_pwm.c\000"
+ 1975 00af 75 6E 73 69 	.LASF3:
+ 1975      67 6E 65 64 
+ 1975      20 69 6E 74 
+ 1975      00 
+ 1976                 		.ascii "short unsigned int\000"
+ 1977 00b5 70 69 6F 5F 	.LASF20:
+ 1977      62 69 74 30 
+ 1977      00 
+ 1978                 		.ascii "write_header\000"
+ 1979 00ba 76 66 5F 70 	.LASF42:
+ 1979      77 6D 2E 63 
+ 1979      00 
+ 1980                 		.ascii "GNU C 4.3.4 CSR version 24 for xap [1865517]\000"
+ 1981 00be 73 68 6F 72 	.LASF41:
+ 1981      74 20 75 6E 
+ 1981      73 69 67 6E 
+ 1981      65 64 20 69 
+ 1981      6E 74 00 
+ 1982                 		.ascii "pwm_inverted\000"
+ 1983 00c8 77 72 69 74 	.LASF36:
+ 1983      65 5F 68 65 
+ 1983      61 64 65 72 
+ 1983      00 
+ 1984                 		.ascii "invert\000"
+ 1985 00ce 47 4E 55 20 	.LASF10:
+ 1985      43 20 34 2E 
+ 1985      33 2E 34 20 
+ 1985      43 53 52 20 
+ 1985      76 65 72 73 
+ 1986                 		.ascii "sleep_mode_never\000"
+ 1987 00e5 70 77 6D 5F 	.LASF17:
+ 1987      69 6E 76 65 
+ 1987      72 74 65 64 
+ 1987      00 
+ 1988                 		.ascii "data\000"
+ 1989 00eb 69 6E 76 65 	.LASF13:
+ 1989      72 74 00 
+ 1990                 		.ascii "buffer\000"
+ 1991 00ef 73 6C 65 65 	.LASF4:
+ 1991      70 5F 6D 6F 
+ 1991      64 65 5F 6E 
+ 1991      65 76 65 72 
+ 1991      00 
+ 1992                 		.ascii "long unsigned int\000"
+ 1993 00f7 64 61 74 61 	.LASF47:
+ 1993      00 
+ 1994                 		.ascii "init_buffer\000"
+ 1995 00fa 62 75 66 66 	.LASF23:
+ 1995      65 72 00 
+ 1996                 		.ascii "count\000"
+ 1997 00fd 6C 6F 6E 67 	.LASF40:
+ 1997      20 75 6E 73 
+ 1997      69 67 6E 65 
+ 1997      64 20 69 6E 
+ 1997      74 00 
+ 1998                 		.ascii "pwm1_pio_mask\000"
+ 1999 0106 69 6E 69 74 	.LASF25:
+ 1999      5F 62 75 66 
+ 1999      66 65 72 00 
+ 2000                 		.ascii "loop\000"
+ 2001 010c 63 6F 75 6E 	.LASF12:
+ 2001      74 00 
+ 2002                 		.ascii "sleep_mode_shallow\000"
+ 2003 010f 70 77 6D 31 	.LASF37:
+ 2003      5F 70 69 6F 
+ 2003      5F 6D 61 73 
+ 2003      6B 00 
+ 2004                 		.ascii "pwm_pio_reg\000"
+ 2005 0116 6C 6F 6F 70 		.ident	"GCC: (GNU) 4.3.4 CSR version 24 for xap [1865517]"
+ 2005      00 
+ 2006                 	...

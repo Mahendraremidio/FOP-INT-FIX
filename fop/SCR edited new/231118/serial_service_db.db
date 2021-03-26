@@ -1,0 +1,42 @@
+/*******************************************************************************
+ *  Copyright Cambridge Silicon Radio Limited 2014-2015
+ *  Part of CSR uEnergy SDK 2.4.5
+ *  Application version 2.4.5.0
+ *  FILE
+ *      serial_service_db.db
+ *
+ *  DESCRIPTION
+ *      This file defines the Serial (customer profile) Service
+ *      in JSON format. This file is included in the main application data base
+ *      file which is used to produce ATT flat data base.
+ *
+ *****************************************************************************/
+#ifndef __SERIAL_SERVICE_DB__
+#define __SERIAL_SERVICE_DB__
+
+#include "serial_service_uuids.h"
+
+/* Primary service declaration of Serial service */
+primary_service {
+    uuid:	UUID_SERIAL_SERVICE,
+    name:	"SERIAL_SERVICE",
+
+    /* Serial Data Transfer characteristic */
+    characteristic  {
+        uuid:	UUID_SERIAL_DATA_TRANSFER,
+        name:	"SERIAL_DATA_TRANSFER",
+
+        /* Dynamic value maintained by the application */
+        /*flags:	[FLAG_IRQ, FLAG_ENCR_W,FLAG_ENCR_R],*/
+        flags:	[FLAG_IRQ],
+
+        properties:	[write,write_cmd, notify,read],
+        size_value:	20,
+
+		 client_config {
+		    flags : [FLAG_IRQ],	
+            name : "SERIAL_DATA_C_CFG"
+        }
+    }
+},
+#endif /* __SERIAL_SERVICE_DB__ */
